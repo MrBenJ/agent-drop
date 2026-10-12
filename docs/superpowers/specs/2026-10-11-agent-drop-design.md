@@ -43,17 +43,19 @@ picks up handoffs left by another agent. Handoff pickup is a core feature, not a
 
 ## 2. Architecture
 
-One repo, one Swift package workspace, three products:
+One repo, one Swift package workspace, four products:
 
 | Product | Kind | Responsibility |
 |---|---|---|
-| `AgentDropCore` | Swift library | Data model, SQLite store, folder operations, id generation, id/filename resolution. All logic lives here. |
-| `drop` | CLI executable | Thin command layer over `AgentDropCore` (swift-argument-parser). |
-| `AgentDrop.app` | SwiftUI app | Main window + menu bar extra. Reads/writes through `AgentDropCore`. |
+| `AgentDropCore` | Swift library | Data model, SQLite store, event log, folder operations, id generation, id/filename resolution, transitions, validation. All **domain** logic lives here. |
+| `AgentDropServer` | Swift library | HTTP server, SSE, token/`Host` checks, port fallback, `server.json`, and the folder watcher that writes debounced `content` events (§5). All **server** logic lives here. Depends on Core. |
+| `drop` | CLI executable | Thin command layer over `AgentDropCore` (swift-argument-parser); uses `AgentDropServer`'s shared wire types for `drop watch`. |
+| `AgentDrop.app` | SwiftUI app | UI only: main window + menu bar extra. Reads/writes through `AgentDropCore` and hosts an `AgentDropServer` instance. |
 
 Dependencies: [GRDB.swift](https://github.com/groue/GRDB.swift) (SQLite),
 [swift-argument-parser](https://github.com/apple/swift-argument-parser) (CLI),
-[swift-cmark](https://github.com/swiftlang/swift-cmark) GFM (Markdown → HTML).
+[swift-cmark](https://github.com/swiftlang/swift-cmark) GFM (Markdown → HTML),
+[Hummingbird 2](https://github.com/hummingbird-project/hummingbird) (HTTP server, on SwiftNIO).
 
 **Minimum macOS:** 14 (Sonoma). Needed for `MenuBarExtra`, `SMAppService`, and the
 Observation framework.
@@ -66,15 +68,23 @@ refreshes. Agents can hand off to each other with the app closed.
 event stream for `drop watch` and other applications. `drop watch` launches the app in
 the background if it isn't running.
 
-The app is **not sandboxed**: it must read a user-chosen folder (default on the
-Desktop) and launch `code`. On first launch macOS will ask for Desktop folder access;
-the app explains why before triggering the prompt.
+The app is **not sandboxed**: it must read a user-chosen folder and launch `code`. If
+the user points it at a protected location (Desktop, Documents, Downloads), macOS asks
+for access the first time the app touches it; the app explains why before triggering
+the prompt.
+
+**First-run setup** happens in the app's window: folder confirmation (and any macOS
+access prompt) plus the launch-at-login question (§6). Finishing it writes
+`"setupComplete": true` to `config.json`. Until then the app never starts its server
+without its window, and `drop watch` refuses to launch it (§4 Watching). Other CLI commands work
+before setup; they run under the terminal's own file access.
 
 ## 3. Storage
 
 ### Drop folder
 
-- Default: `~/Desktop/AgentDrop`.
+- Default: `~/AgentDrop` (no macOS permission prompt). Users who want it on the Desktop
+  set it with `drop config set-folder ~/Desktop/AgentDrop`.
 - The folder path has **one source of truth**:
   `~/Library/Application Support/AgentDrop/config.json`, read by both the app and the
   CLI. If the file is absent, both use the default. There is no environment-variable
@@ -187,9 +197,9 @@ passes `workspace/tab`, or `workspace/space/tab` for sub-workspaces, e.g.
 
 | Command | Behavior |
 |---|---|
-| `drop add <path> [flags]` | Copies the file, or the directory recursively, into the drop folder and registers it; prints the id. If `<path>` is already a top-level entry of the drop folder, registers in place. Any other path inside the drop folder (inside a subdirectory, or a dotfile) → exit 1. Symlink → exit 1. Name collision → suffix (`plan-2.md`). Flags: `--title`, `-m/--desc`, `--project`, `--tag <t>` (repeatable), `--from` (required), `--handoff` (sets `kind=handoff`, `status=open`), `--move` (move instead of copy). Re-adding an already-registered entry → exit 3. |
-| `drop add - --name <filename> [flags]` | Same, reading content from stdin (always a file drop). `--name` required. |
-| `drop edit <id> [flags]` | Updates metadata: `--title`, `-m/--desc`, `--project`, `--tag <t>`, `--untag <t>`, `--kind note\|handoff`. Changing to `handoff` sets `status=open`; changing to `note` clears status fields. |
+| `drop add <path> [flags]` | Copies the file, or the directory recursively, into the drop folder and registers it; prints the id. If `<path>` is already a top-level entry of the drop folder, registers in place. Any other path inside the drop folder (inside a subdirectory) → exit 1. Symlink → exit 1. Optional `--name <name>` sets the drop's top-level name (default: the source's basename). **Name rule** (also for `drop add -`): the resulting name must not start with `.`, be empty, contain `/`, or be `.`/`..` → exit 1, suggesting `--name`. Name collision → suffix (`plan-2.md`). Flags: `--title`, `-m/--desc`, `--project`, `--tag <t>` (repeatable), `--from` (required), `--name`, `--handoff` (sets `kind=handoff`, `status=open`), `--move` (move instead of copy). Re-adding an already-registered entry → exit 3. |
+| `drop add - --name <filename> [flags]` | Same, reading content from stdin (always a file drop). `--name` required; same name rule. |
+| `drop edit <id> [flags]` | Updates metadata: `--title`, `-m/--desc`, `--project`, `--tag <t>`, `--untag <t>`, `--kind note\|handoff`. Kind changes follow §4.2 ("Changing kind"). |
 | `drop archive <id>` | Sets `archived=true`. `drop archive --undo <id>` reverses it. The file is untouched. |
 
 **Finding and reading**
@@ -216,12 +226,21 @@ passes `workspace/tab`, or `workspace/space/tab` for sub-workspaces, e.g.
 
 | Command | Behavior |
 |---|---|
-| `drop watch <id> [--once] [--json]` | Subscribes to events for one drop (§5.3). Prints one line per event (one JSON object per line with `--json`) until interrupted. Ends with exit 0 after a `missing` event. `--once`: exits 0 after the first event. |
+| `drop watch <id> [--once] [--json]` | Subscribes to events for one drop (§5.3). Prints one line per event (one JSON object per line with `--json`) until interrupted. Ends with exit 0 after a `missing` or `removed` event. `--once`: exits 0 after the first event. |
 | `drop watch --inbox [--project <p>] [--once] [--json]` | Subscribes to handoffs entering the Inbox (§5.3), optionally for one project. |
 
-`drop watch` reads `server.json` (§5.2); if the app isn't running, it launches it hidden
-and waits up to 10 s for the server. Server unreachable after that → exit 1. Unknown
-id → exit 2.
+`drop watch` first checks `setupComplete` in `config.json`; if it isn't `true`, it exits 1
+immediately: "Agent Drop hasn't been set up yet. Open the Agent Drop app once to finish
+setup." Otherwise it reads `server.json` (§5.2); if the app isn't running, it launches it **without
+opening its window** and waits up to 10 s for the server. Server unreachable after that
+→ exit 1. Unknown id → exit 2.
+
+"Without opening its window" is not invisible: the menu bar icon appears as on any
+launch, so the user can always see the app is running and quit it. The app **keeps
+running** after the watch ends, like any normal launch. Reason: `drop watch` can only
+launch it after first-run setup, where the user has already chosen whether they want it
+running at login; quitting when watchers leave would also cut off other server clients
+and stop `content` events (§5.1).
 
 **Human and setup**
 
@@ -231,6 +250,8 @@ id → exit 2.
 | `drop code <id>` | Runs `code <absolute path>`. If `code` isn't on PATH → exit 1 with a hint. |
 | `drop where` | Prints the drop folder path in use. |
 | `drop config set-folder <path>` | Sets the drop folder in `config.json` (creating the folder if needed). |
+| `drop config set-retention <days\|forever>` | Sets `eventRetentionDays` (§5.1). |
+| `drop config show` | Prints every `config.json` setting: folder, event retention, server port, setup status. |
 | `drop agent-instructions` | Prints a Markdown snippet for `CLAUDE.md` / `AGENTS.md` teaching an agent when and how to use `drop` (dropping with context, checking `drop inbox`, claim → done). It tells the agent to pass whatever identity its harness provides as `--from`/`--by`, and shows quoting for values with spaces. |
 
 ### 4.2 Handoff transitions
@@ -253,6 +274,19 @@ legal transitions; the CLI and app share one implementation in `AgentDropCore`.
 - Any transition on a `note` → exit 1.
 - `done` is permanent until explicitly reopened. Nothing auto-archives.
 
+**Changing kind** (`drop edit --kind`, or the app's edit form):
+
+| Current | Change | Result |
+|---|---|---|
+| note | `--kind handoff` | Handoff with `status = open` |
+| handoff, `open` | `--kind note` | Note; status fields cleared |
+| handoff, `claimed` | either | Exit 3: "…is claimed by …; release it first" |
+| handoff, `done` | either | Exit 3: "…is done; reopen it first" |
+
+The check is part of the conditional update, like the transitions above. A kind change
+emits one `metadata` event with `{kind, status}`. In the app, the kind picker is
+disabled (with a tooltip) while a handoff is claimed or done.
+
 ### JSON shape
 
 `show`, `add`, `latest`, `claim`, `release`, `done`, `reopen`, `edit`, `archive` return one drop
@@ -262,7 +296,7 @@ object; `list` and `inbox` return an array of them:
 {
   "id": "k7f2qa",
   "filename": "auth-plan.md",
-  "path": "/Users/me/Desktop/AgentDrop/auth-plan.md",
+  "path": "/Users/me/AgentDrop/auth-plan.md",
   "title": "Auth refactor plan",
   "description": "Plan for moving sessions to cookies; Codex should implement.",
   "project": "courses-app",
@@ -290,10 +324,21 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 - Every mutation, from the CLI or the app, appends one row to an `event` table in the
   same SQLite transaction as the change:
   `seq` (integer, autoincrement) · `type` · `drop_id` · `at` · `data` (JSON).
-- `content` events are written by the app when FSEvents reports a change to a drop's
+- `content` events are written by `AgentDropServer`'s folder watcher (running in the app) when FSEvents reports a change to a drop's
   file (or anything inside a folder drop), debounced per drop (300 ms of quiet). Content
   changes made while the app isn't running produce no event.
-- Events older than 30 days are pruned on app launch.
+- **Retention (disclosed, configurable).** `eventRetentionDays` in `config.json`:
+  a number of days (default `30`) or `"forever"`. When it is a number, every mutation's
+  transaction also deletes event rows older than that (`DELETE FROM event WHERE at < …`,
+  indexed on `at`). No timer runs. Because cleanup rides on writes, events are kept for
+  **at least** the retention period; with no writes, older rows can remain until the
+  next one. `"forever"` disables cleanup and the log grows without limit.
+- **Cleanup only ever deletes event-log rows.** Drops, their files, and their metadata
+  are never deleted by it.
+- Disclosure: the app's Settings → Event history shows the choice (7 / 30 / 90 days /
+  Forever) with the note "Old entries in the change log are deleted as new changes come
+  in. Your drops and files are never deleted." `drop config show` prints it. The README
+  documents it under "What Agent Drop stores and deletes".
 
 | `type` | Emitted when | `data` |
 |---|---|---|
@@ -303,10 +348,12 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 | `status` | Any §4.2 transition | `{from, to, claimedBy, statusNote}` |
 | `archived` | Archived or un-archived | `{archived}` |
 | `missing` | The drop's file / folder disappeared | `{}` |
+| `read` | A human views the drop in the app for the first time (`read_at` goes from null to set; never re-emitted) | `{readAt}` |
+| `removed` | The record is deleted via **Remove record** (§3.2) | `{}` |
 
 ### 5.2 Server
 
-- Runs inside the app whenever the app is running. HTTP on `127.0.0.1` only.
+- Implemented in `AgentDropServer`; hosted by the app whenever the app is running. HTTP on `127.0.0.1` only.
 - Port: `47390` by default, configurable in `config.json`. If it is taken, the app tries
   the next 9 ports.
 - On start, the app writes `~/Library/Application Support/AgentDrop/server.json`
@@ -329,7 +376,7 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 
 - Each SSE message: `id: <seq>`, `event: <type>`, `data: {"seq", "type", "dropId", "at", "data"}`.
 - Clients reconnect with `Last-Event-ID` and receive every event with a larger `seq`
-  that matches their filter (subject to the 30-day pruning).
+  that matches their filter, back to the retention limit (§5.1).
 - Errors use the same JSON error shape as the CLI, with HTTP 400 / 401 / 403 / 404.
 
 ## 6. The app (draft — to be refined)
@@ -340,7 +387,7 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
   always present while the app runs.
 - Closing the main window does not quit the app; the menu bar keeps running.
 - Setting: **Hide Dock icon** (switches activation policy to accessory).
-- Setting: **Launch at login** (via `SMAppService`). On first launch the app asks once:
+- Setting: **Launch at login** (via `SMAppService`). During first-run setup (§2) the app asks once:
   "Start Agent Drop at login? Agents and apps that watch for changes need it running",
   with **Yes** pre-selected; afterwards it's an ordinary setting. Reason: the local
   server (§5.2) and `content` events (§5.1) exist only while the app runs, and other
@@ -415,12 +462,20 @@ Viewing a drop in the detail pane sets `read_at`.
   id/filename resolution, claim atomicity under concurrent writers, reconciliation
   (unregistered / missing), identity-field validation and `--from-under` matching. Each test uses a temp
   directory.
-- **`drop` CLI**: integration tests that run the built binary with `HOME`
-  pointed at a temp directory (each test gets its own `config.json` and drop folder), asserting stdout (`--json`), stderr, and exit codes for
-  every command, including the handoff lifecycle end-to-end.
+- **Path injection, not overrides:** `AgentDropCore` takes its config directory as a
+  parameter. The shipped CLI and app always pass
+  `~/Library/Application Support/AgentDrop/`; tests pass a temp directory. The shipped
+  binary has no path override of any kind (§3).
+- **`drop` CLI** (`dropCLITests`): commands run in-process via swift-argument-parser
+  with injected paths, asserting stdout (`--json`), stderr, and exit codes for every
+  command, including the handoff lifecycle end-to-end.
+- **Real-binary smoke tests**: run only in CI on ephemeral GitHub Actions macOS runners,
+  against the real default paths. A guard skips them outside CI so they can never touch
+  a developer's real `~/AgentDrop`.
 - **Event log**: every mutation writes exactly one event row in the same transaction;
-  `seq` is strictly increasing; pruning.
-- **Server** (against a temp store, started in-process): token and `Host` checks, each
+  `seq` is strictly increasing; retention cleanup deletes only expired event rows (never
+  drops) and is skipped with `"forever"`.
+- **`AgentDropServerTests`** (server started in-process against a temp store): token and `Host` checks, each
   endpoint, SSE delivery for each event type, `Last-Event-ID` resume, content
   debouncing, inbox filtering. `drop watch` tested end-to-end against it.
 - **App**: view models unit-tested against a temp store; UI verified manually against a
@@ -431,13 +486,15 @@ Viewing a drop in the detail pane sets `read_at`.
 
 ```
 agent-drop/
-├── Package.swift                 # AgentDropCore + drop CLI
+├── Package.swift                 # AgentDropCore, AgentDropServer, drop CLI
 ├── Sources/
 │   ├── AgentDropCore/
+│   ├── AgentDropServer/
 │   └── drop/
 ├── Tests/
 │   ├── AgentDropCoreTests/
-│   └── dropCLITests/
+│   ├── AgentDropServerTests/
+│   └── dropCLITests/        # incl. `drop watch` end-to-end against an in-process server
 ├── App/                          # Xcode project for AgentDrop.app (depends on the package)
 ├── docs/superpowers/specs/
 ├── LICENSE                       # MIT
