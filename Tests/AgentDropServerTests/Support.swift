@@ -119,3 +119,11 @@ func rawHTTP(port: Int, _ request: String) throws -> String {
     }
     return String(decoding: response, as: UTF8.self)
 }
+
+final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Value
+    init(_ value: Value) { _value = value }
+    var value: Value { lock.withLock { _value } }
+    func withLock(_ body: (inout Value) -> Void) { lock.withLock { body(&_value) } }
+}
