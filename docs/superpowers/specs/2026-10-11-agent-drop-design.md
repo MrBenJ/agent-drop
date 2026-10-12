@@ -104,7 +104,16 @@ reads only `config.json` (Application Support, no permission needed).
   CLI. If the file is absent, both use the default. There is no environment-variable
   override.
 - Changed from the app's Settings or with `drop config set-folder <path>`. The app
-  watches `config.json` and switches immediately when the CLI changes it.
+  watches `config.json`. A switch to an **unprotected** folder applies immediately.
+- **Protected-folder confirmation.** If the newly configured folder is in a protected
+  location (Desktop, Documents, Downloads, iCloud Drive, or a removable/network volume)
+  and wasn't chosen in the app itself, the app does not touch it until the user
+  confirms in the app: the server and content watcher stop, the menu bar shows "Drop
+  folder changed — confirm", and clicking it shows the same explanation as setup before
+  the folder is first accessed. This also applies when the app launches (windowless or
+  not) and finds such an unconfirmed folder. Until confirmed, `drop watch` exits 1
+  ("Confirm the new drop folder in Agent Drop"). The confirmed path is stored as
+  `confirmedFolder` in `config.json`.
 - Switching folders moves nothing. The old folder keeps its files and its own
   `.agentdrop/` store; switching back restores it.
 - Created on first use by either the CLI or the app.
@@ -131,7 +140,7 @@ reads only `config.json` (Application Support, no permission needed).
 | `title` | text | Defaults to the first Markdown `# heading` (for a folder drop: of its `README.md`, else its first `.md` alphabetically), else the filename without extension |
 | `description` | text, nullable | The why / context |
 | `project` | text, nullable | Free-form (see §4.1), e.g. `courses-app` |
-| `tags` | separate `drop_tag(drop_id, tag)` table | Lowercased, trimmed |
+| `tags` | separate `drop_tag(drop_id, tag)` table | Stored exactly as given (trimmed only) and matched exactly, like the §4.1 identity fields; `PR` and `pr` are different tags |
 | `from` | text | Free-form identity of whoever dropped it (see §4.1), e.g. `djleague/build-feature-x` |
 | `created_at` | timestamp | |
 | `updated_at` | timestamp | |
@@ -253,8 +262,10 @@ passes `workspace/tab`, or `workspace/space/tab` for sub-workspaces, e.g.
 
 `drop watch` first checks `setupComplete` in `config.json`; if it isn't `true`, it exits 1
 immediately: "Agent Drop hasn't been set up yet. Open the Agent Drop app once to finish
-setup." Otherwise it reads `server.json` (§5.2). If it says `no-port`, it exits 1 with that
-reason. If the app isn't running, it launches it **without
+setup." Otherwise it reads `server.json` (§5.2). It first checks that `pid` is a live
+process; if not (or the file is absent), the app is treated as not running. If the app
+is running and the file says `no-port`, it exits 1 with that reason. If the app isn't
+running, it launches it **without
 opening its window** and waits up to 10 s for the server. Server unreachable after that
 → exit 1. Unknown id → exit 2.
 
@@ -424,8 +435,9 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
   it. Each SSE message: `id: <storeId>:<seq>`, `event: <type>`,
   `data: {"storeId", "seq", "type", "dropId", "at", "data"}`.
 - **Resume within one store:** clients reconnect with `Last-Event-ID` and receive every
-  event of that store with a larger `seq` that matches their filter, back to the
-  retention limit (§5.1).
+  surviving event of that store with a larger `seq` that matches their filter. There is
+  no age filter on replay; events older than the retention period may already have
+  been deleted (§5.1).
 - **Folder switch = clean break:** switching the drop folder restarts the server (open
   streams closed, new token, `server.json` rewritten). A client reconnecting with a
   `Last-Event-ID` from a different `storeId` first receives one `reset` event
