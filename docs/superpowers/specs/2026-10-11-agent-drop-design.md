@@ -43,19 +43,23 @@ picks up handoffs left by another agent. Handoff pickup is a core feature, not a
 
 ## 2. Architecture
 
-One repo: a Swift package (`AgentDropCore`, `AgentDropServer`, `drop`) plus an Xcode
-project for the app (§9).
+One repo, one Swift package (`AgentDropCore`, `AgentDropServer`, `drop`, and the app's
+`AgentDropApp` library and `AgentDrop` executable). `Scripts/build-app.sh` wraps the
+executable into `AgentDrop.app` with `App/Info.plist` (§9). No Xcode project: the app
+builds and its models test with `swift build` / `swift test`, like everything else.
 
 | Product | Kind | Responsibility |
 |---|---|---|
 | `AgentDropCore` | Swift library | Data model, SQLite store, event log, folder operations, id generation, id/filename resolution, transitions, validation. All **domain** logic lives here. |
 | `AgentDropServer` | Swift library | HTTP server, SSE, token/`Host` checks, port fallback, `server.json`, and the folder watcher that writes debounced `content` events (§5). All **server** logic lives here. Depends on Core. |
 | `drop` | CLI executable | Thin command layer over `AgentDropCore` (swift-argument-parser); uses `AgentDropServer`'s shared wire types for `drop watch`. |
-| `AgentDrop.app` | SwiftUI app | UI only: main window + menu bar extra. Reads/writes through `AgentDropCore` and hosts an `AgentDropServer` instance. |
+| `AgentDropApp` | Swift library | The app's testable layer: lifecycle (setup, folder confirmation, hosting the service), the library and menu models, forms, notifications logic, Markdown rendering and preview rules. No views. |
+| `AgentDrop.app` | SwiftUI app (`AgentDrop` executable) | UI only: main window + menu bar extra. Reads/writes through `AgentDropCore` (via `AgentDropApp`) and hosts an `AgentDropServer` instance. |
 
 Dependencies: [GRDB.swift](https://github.com/groue/GRDB.swift) (SQLite),
 [swift-argument-parser](https://github.com/apple/swift-argument-parser) (CLI),
-[swift-cmark](https://github.com/swiftlang/swift-cmark) GFM (Markdown → HTML),
+[swift-cmark](https://github.com/swiftlang/swift-cmark) GFM (Markdown → HTML; pinned to a
+commit on its `gfm` branch, which has no semver tags),
 [Hummingbird 2](https://github.com/hummingbird-project/hummingbird) (HTTP server, on SwiftNIO).
 
 **Minimum macOS:** 14 (Sonoma). Needed for `MenuBarExtra`, `SMAppService`, and the
@@ -498,7 +502,7 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
   "type": "file" | "directory" | "symlink" | "other", "size"?, "target"?}]}`, recursively,
   sorted by path. Links appear with their `target` text and are never followed (§3).
 
-## 6. The app (draft — to be refined)
+## 6. The app
 
 ### Shape
 
@@ -513,7 +517,11 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
   applications can't launch it the way `drop watch` does. Idle cost is a file watcher
   plus a listening socket; nothing polls.
 - Setting: **Notify on new drops** (via `UserNotifications`), default on. Clicking a
-  notification opens that drop.
+  notification opens that drop. Only drops created while the app runs are announced
+  (never ones from before launch or from a previous folder), never drops the human
+  registered in the app itself, and more than three at once become one summary.
+- The app's own settings (Hide Dock icon, Notify) live in its UserDefaults. Settings the
+  CLI also reads (folder, retention, port) stay in `config.json`.
 
 ### Menu bar extra
 
@@ -545,10 +553,12 @@ Viewing a drop in the detail pane sets `read_at`.
 - **View rendered** (default preview for `.md`).
 - **Open in VS Code** (`code <path>`; disabled with a tooltip if `code` isn't found).
 - **Reveal in Finder**.
-- **Copy path** and **Copy `drop cat <id>`** (handy for pasting into an agent).
+- **Copy path** and **Copy `drop cat <id>`** (handy for pasting into an agent; `drop path
+  <id>` for a folder drop, which `drop cat` can't print).
 - Handoffs: **Release** / **Mark done** / **Reopen**, which call the same `AgentDropCore`
   transitions as the CLI (§4.2). Humans do not claim from the app.
-- **Edit metadata**, **Archive**.
+- **Edit metadata**, **Archive**. Like `drop edit`, the edit form can't clear a
+  description or project yet; emptying one is refused with a message.
 
 ### Rendering
 
@@ -556,7 +566,14 @@ Viewing a drop in the detail pane sets `read_at`.
   that follows light/dark mode. Relative links and images resolve against the rendered file's own directory (for a
   folder drop's README, the folder drop itself).
   Links open in the default browser. JavaScript in the rendered content is disabled.
-- Plain text / code files: monospace text view.
+  Raw HTML in the Markdown is not rendered (cmark's safe mode), and the page's
+  Content-Security-Policy allows no scripts; images may come from the drop folder,
+  `data:` and `https:`. Relative references are served from the drop folder only (never
+  above it, never `.agentdrop/` or other dot-entries, never through a symlink). A link to
+  a file in the drop folder reveals it in Finder instead of opening it, so a click can't
+  run a script an agent left there.
+- Plain text / code files: monospace text view. HTML files are shown as text, never
+  rendered. Files over 2 MB go to Quick Look.
 - Everything else (images, PDFs, …): Quick Look preview (`QLPreviewView`).
 - Folder drops: a file tree of the drop's contents above the rendered `README.md` (or
   first `.md` alphabetically) if one exists. Selecting a file in the tree previews it
@@ -602,24 +619,28 @@ Viewing a drop in the detail pane sets `read_at`.
   `storeId` mismatch after a folder switch, content
   debouncing, inbox filtering. (`drop watch` end-to-end tests live in `dropCLITests`,
   against an in-process server.)
-- **App**: view models unit-tested against a temp store; UI verified manually against a
-  checklist (menu bar count, notification, rendered view, VS Code open, unregistered
-  register flow).
+- **App**: view models unit-tested against a temp store; UI verified manually against
+  `docs/manual-test-checklist.md` (menu bar count, notification, rendered view, VS Code
+  open, unregistered register flow).
 
 ## 9. Repo layout
 
 ```
 agent-drop/
-├── Package.swift                 # AgentDropCore, AgentDropServer, drop CLI
+├── Package.swift                 # AgentDropCore, AgentDropServer, drop CLI, the app
 ├── Sources/
 │   ├── AgentDropCore/
 │   ├── AgentDropServer/
-│   └── drop/
+│   ├── DropCLI/ + drop/
+│   ├── AgentDropApp/             # the app's models, rendering, settings (tested)
+│   └── AgentDrop/                # the app's SwiftUI/AppKit views
 ├── Tests/
 │   ├── AgentDropCoreTests/
 │   ├── AgentDropServerTests/
-│   └── dropCLITests/        # incl. `drop watch` end-to-end against an in-process server
-├── App/                          # Xcode project for AgentDrop.app (depends on the package)
+│   ├── dropCLITests/        # incl. `drop watch` end-to-end against an in-process server
+│   └── AgentDropAppTests/   # app models against temp stores and a temp config dir
+├── App/Info.plist                # AgentDrop.app's Info.plist (bundle id, agentdrop:// scheme)
+├── Scripts/build-app.sh          # swift build + wrap the AgentDrop executable into AgentDrop.app
 ├── docs/superpowers/specs/
 ├── LICENSE                       # MIT
 └── README.md

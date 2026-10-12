@@ -72,7 +72,9 @@ public final class DropStore: Sendable {
     public let folder: URL
     public let storeID: String
     let pool: DatabasePool
-    let retention: Retention
+    private let retentionSetting: RetentionSetting
+    /// Event-log retention applied by every write (spec §5.1). The app changes it live.
+    public var retention: Retention { retentionSetting.value }
     let now: @Sendable () -> Date
     let hooks: StoreHooks
 
@@ -81,7 +83,7 @@ public final class DropStore: Sendable {
         self.folder = folder
         self.storeID = storeID
         self.pool = pool
-        self.retention = retention
+        self.retentionSetting = RetentionSetting(retention)
         self.now = now
         self.hooks = hooks
     }
@@ -114,6 +116,12 @@ public final class DropStore: Sendable {
         } catch {
             throw AgentDropError.invalid("Can't open the store at \(path): \(error)")
         }
+    }
+
+    /// Settings → Event history changed while the app holds this store open: the next
+    /// write uses the new value. Other processes read `config.json` on their own.
+    public func setRetention(_ retention: Retention) {
+        retentionSetting.value = retention
     }
 
     /// Runs `body` in an IMMEDIATE transaction (write lock held from the start).
@@ -166,6 +174,16 @@ public final class DropStore: Sendable {
                                            arguments: [id])
             return Drop(row: row, tags: tags)
         }
+    }
+}
+
+private final class RetentionSetting: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Retention
+    init(_ value: Retention) { _value = value }
+    var value: Retention {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }
 

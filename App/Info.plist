@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Agent Drop</string>
+	<key>CFBundleExecutable</key>
+	<string>AgentDrop</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.mrbenj.AgentDrop</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Agent Drop</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.github.mrbenj.AgentDrop.drop</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>agentdrop</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Your drop folder is on the Desktop. Agent Drop reads it to show your drops.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Your drop folder is in Documents. Agent Drop reads it to show your drops.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Your drop folder is in Downloads. Agent Drop reads it to show your drops.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Your drop folder is on a removable drive. Agent Drop reads it to show your drops.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Your drop folder is on a network drive. Agent Drop reads it to show your drops.</string>
+</dict>
+</plist>

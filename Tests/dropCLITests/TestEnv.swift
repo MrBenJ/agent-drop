@@ -10,6 +10,8 @@ final class TestEnv: @unchecked Sendable {
     var stdin = Data()
     var codeExecutable: URL?
     var useRealProcess = false
+    /// When set, the fake `runProcess` records the call and then throws this.
+    var processError: AgentDropError?
     /// `drop watch` hooks. By default launching fails, so a test must opt in.
     var launchApp: @Sendable () throws -> Void = { throw AgentDropError.invalid("no app in tests") }
     var isProcessAlive: @Sendable (Int32) -> Bool = { pid in pid > 0 && (kill(pid, 0) == 0 || errno == EPERM) }
@@ -48,7 +50,7 @@ final class TestEnv: @unchecked Sendable {
 
     private func makeContext(out: OutputSink, err: OutputSink) -> CLIContext {
         let stdin = self.stdin, clock = self.clock, code = self.codeExecutable
-        let useRealProcess = self.useRealProcess
+        let useRealProcess = self.useRealProcess, processError = self.processError
         return CLIContext(
             config: config, cwd: cwd, now: { clock }, readStdin: { stdin },
             stdout: out, stderr: err,
@@ -56,6 +58,7 @@ final class TestEnv: @unchecked Sendable {
             runProcess: { [weak self] executable, args in
                 if useRealProcess { return try CLIContext.live().runProcess(executable, args) }
                 self?.lock.withLock { self?._processCalls.append((executable, args)) }
+                if let processError { throw processError }
                 return 0
             },
             launchApp: launchApp, isProcessAlive: isProcessAlive, serverWait: serverWait)

@@ -116,7 +116,7 @@ extension DropStore {
         }
     }
 
-    /// Spec §5.1 `read`: first view in the app only. Used by Plan 3.
+    /// Spec §5.1 `read`: first view in the app only.
     public func markRead(_ ref: String) throws -> Drop {
         let target = try resolve(ref)
         let now = self.now()
@@ -135,7 +135,7 @@ extension DropStore {
         }
     }
 
-    /// Spec §3.2 "Remove record": only for drops whose file is gone. Used by Plan 3.
+    /// Spec §3.2 "Remove record": only for drops whose file is gone.
     public func removeRecord(_ ref: String) throws {
         let target = try resolve(ref)
         guard target.missing else {

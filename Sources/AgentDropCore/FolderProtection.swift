@@ -4,14 +4,21 @@ import Foundation
 /// reads them, plus removable and network volumes.
 public enum FolderProtection {
     public static func isProtected(_ folder: URL, homeDir: URL) -> Bool {
-        // Compare real paths, case-insensitively: `~/desktop` and a symlink to ~/Desktop
+        // The path as written first, without touching the disk: looking inside a protected
+        // folder (even a stat) can make macOS ask for access, and the app must explain
+        // that prompt before it appears (spec §2). The app's setup screen asks this.
+        if isUnderProtectedRoot(folder.standardizedFileURL.path.lowercased(),
+                                home: homeDir.standardizedFileURL.path.lowercased()) { return true }
+        // Then real paths, case-insensitively: `~/desktop` and a symlink to ~/Desktop
         // reach the same protected folder on a default (case-insensitive) APFS volume.
-        let path = canonical(folder)
-        let home = canonical(homeDir)
-        let protectedRoots = ["desktop", "documents", "downloads", "library/mobile documents"]
-            .map { home + "/" + $0 }
-        if protectedRoots.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) { return true }
+        if isUnderProtectedRoot(canonical(folder), home: canonical(homeDir)) { return true }
         return isOnRemovableOrNetworkVolume(folder.standardizedFileURL)
+    }
+
+    private static func isUnderProtectedRoot(_ path: String, home: String) -> Bool {
+        ["desktop", "documents", "downloads", "library/mobile documents"]
+            .map { home + "/" + $0 }
+            .contains { path == $0 || path.hasPrefix($0 + "/") }
     }
 
     /// realpath(3) of the nearest existing ancestor plus the rest, lowercased.
