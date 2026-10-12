@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ProcessInfo.processInfo.automaticTerminationSupportEnabled = false
         ProcessInfo.processInfo.disableAutomaticTermination("Agent Drop serves drop watch and other apps")
         DockIcon.apply(hidden: model.settings.hideDockIcon)
+        // Quick Look snapshots left by a previous run.
+        try? FileManager.default.removeItem(at: NoFollowFile.snapshotRoot)
         Task {
             await model.launch()
             // Setup always shows its window (spec §2), even for a windowless launch.

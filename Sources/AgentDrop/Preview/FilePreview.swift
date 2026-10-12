@@ -23,9 +23,9 @@ struct FilePreview: View {
             case .markdown?:
                 MarkdownView(root: root, relativePath: relativePath, revision: revision)
             case .text?:
-                TextFileView(url: url, revision: revision)
+                TextFileView(root: root, relativePath: relativePath, revision: revision)
             case .quickLook?:
-                QuickLookView(url: url, revision: revision)
+                QuickLookView(root: root, relativePath: relativePath, revision: revision)
             case .folder?:
                 ContentUnavailableView("Folder", systemImage: "folder",
                                        description: Text("Select a file inside it to preview it."))
@@ -43,9 +43,11 @@ struct FilePreview: View {
     }
 }
 
-/// Plain text and code: a read-only monospace text view (fast for large files).
+/// Plain text and code: a read-only monospace text view (fast for large files). Reads
+/// never follow a link, even one swapped in after classification.
 struct TextFileView: NSViewRepresentable {
-    let url: URL
+    let root: URL
+    let relativePath: String
     let revision: Int
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -59,27 +61,45 @@ struct TextFileView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        let text = (try? Data(contentsOf: url)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let text = NoFollowFile.read(relativePath, under: root).map { String(decoding: $0, as: UTF8.self) } ?? ""
         let textView = scrollView.documentView as! NSTextView
         if textView.string != text { textView.string = text }
     }
 }
 
-/// Images, PDFs and everything else (spec §6). Only ever given regular files.
+/// Images, PDFs and everything else (spec §6). Quick Look opens paths itself and would
+/// follow a link swapped in after classification, so it is shown a private snapshot
+/// taken through a no-follow descriptor, retaken when the file (revision) changes.
 struct QuickLookView: NSViewRepresentable {
-    let url: URL
+    let root: URL
+    let relativePath: String
     let revision: Int
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> QLPreviewView {
         QLPreviewView(frame: .zero, style: .normal)!
     }
 
     func updateNSView(_ view: QLPreviewView, context: Context) {
-        if (view.previewItem as? URL) != url {
-            view.previewItem = url as NSURL
-        } else {
-            view.refreshPreviewItem()
-        }
+        let key = "\(relativePath)#\(revision)"
+        guard context.coordinator.key != key else { return }
+        context.coordinator.key = key
+        let previous = context.coordinator.snapshot
+        let snapshot = NoFollowFile.snapshot(relativePath, under: root)
+        context.coordinator.snapshot = snapshot
+        view.previewItem = snapshot.map { $0 as NSURL }
+        if let previous { NoFollowFile.discardSnapshot(previous) }
+    }
+
+    static func dismantleNSView(_ view: QLPreviewView, coordinator: Coordinator) {
+        view.close()
+        if let snapshot = coordinator.snapshot { NoFollowFile.discardSnapshot(snapshot) }
+    }
+
+    final class Coordinator {
+        var key: String?
+        var snapshot: URL?
     }
 }
 

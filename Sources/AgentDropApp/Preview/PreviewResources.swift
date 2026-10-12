@@ -15,12 +15,17 @@ public enum PreviewResources {
         return URL(string: "\(scheme)://\(host)/" + encoded.map { $0 + "/" }.joined())!
     }
 
-    /// The regular file a preview URL names inside `root`, or nil.
+    /// The bytes a preview URL names, read without following links even if one was
+    /// swapped in after `file(for:root:)` checked the path.
+    public static func data(for url: URL, root: URL) -> Data? {
+        guard let components = components(of: url) else { return nil }
+        return NoFollowFile.read(components.joined(separator: "/"), under: root)
+    }
+
+    /// The regular file a preview URL names inside `root`, or nil. For revealing it in
+    /// Finder; reads go through `data(for:root:)`.
     public static func file(for url: URL, root: URL) -> URL? {
-        guard url.scheme == scheme, url.host == host else { return nil }
-        let components = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard !components.isEmpty,
-              components.allSatisfy({ $0 != ".." && $0 != "." && !$0.hasPrefix(".") }) else { return nil }
+        guard let components = components(of: url) else { return nil }
         var current = root
         for (index, component) in components.enumerated() {
             current = current.appendingPathComponent(component)
@@ -29,5 +34,13 @@ public enum PreviewResources {
             guard type == (isLast ? .typeRegular : .typeDirectory) else { return nil }
         }
         return current
+    }
+
+    private static func components(of url: URL) -> [String]? {
+        guard url.scheme == scheme, url.host == host else { return nil }
+        let components = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !components.isEmpty,
+              components.allSatisfy({ $0 != ".." && $0 != "." && !$0.hasPrefix(".") }) else { return nil }
+        return components
     }
 }

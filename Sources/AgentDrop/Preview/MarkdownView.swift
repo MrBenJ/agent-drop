@@ -25,7 +25,7 @@ struct MarkdownView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        let markdown = (try? Data(contentsOf: root.appendingPathComponent(relativePath)))
+        let markdown = NoFollowFile.read(relativePath, under: root)
             .map { String(decoding: $0, as: UTF8.self) } ?? ""
         let base = PreviewResources.baseURL(forDocumentAt: relativePath)
         // Reload only when the text changed, so a refresh doesn't lose the scroll position.
@@ -76,12 +76,12 @@ final class PreviewSchemeHandler: NSObject, WKURLSchemeHandler {
     init(root: URL) { self.root = root }
 
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
-        guard let url = task.request.url, let file = PreviewResources.file(for: url, root: root),
-              let data = try? Data(contentsOf: file) else {
+        // Read without following links, even one swapped in after the path was checked.
+        guard let url = task.request.url, let data = PreviewResources.data(for: url, root: root) else {
             task.didFailWithError(URLError(.fileDoesNotExist))
             return
         }
-        let type = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
         task.didReceive(URLResponse(url: url, mimeType: type, expectedContentLength: data.count, textEncodingName: nil))
         task.didReceive(data)
         task.didFinish()

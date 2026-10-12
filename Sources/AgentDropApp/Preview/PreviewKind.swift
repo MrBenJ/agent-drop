@@ -58,10 +58,10 @@ public enum PreviewKind: Equatable, Sendable {
 
     /// No NUL bytes and valid UTF-8 in the first 8 KB (allowing a character cut off at the end).
     static func looksLikeText(_ url: URL) -> Bool {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { try? handle.close() }
         let limit = 8192
-        guard let data = try? handle.read(upToCount: limit), !data.isEmpty else { return true }
+        guard let data = NoFollowFile.read(url.lastPathComponent, under: url.deletingLastPathComponent(),
+                                           maxBytes: limit) else { return false }
+        guard !data.isEmpty else { return true }
         guard !data.contains(0) else { return false }
         let maxCut = data.count == limit ? 3 : 0
         return (0...maxCut).contains { String(data: data.dropLast($0), encoding: .utf8) != nil }
