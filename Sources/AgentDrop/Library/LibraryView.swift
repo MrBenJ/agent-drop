@@ -34,7 +34,7 @@ struct BannerView: View {
     var body: some View {
         switch banner {
         case .noPort:
-            NoticeBar(text: "No free port for the local server, so `drop watch` and other apps can't connect. Agent Drop still records changes; they catch up once connected.",
+            NoticeBar(text: "No free port for the local server, so drop watch and other apps can't connect. Agent Drop still records changes; they catch up once connected.",
                       systemImage: "network.slash") {
                 Button("Retry") { Task { await model.retryPort() } }
             }

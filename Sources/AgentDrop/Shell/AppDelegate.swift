@@ -33,6 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // With no window open (a `--windowless` launch, or the window closed) macOS would
+        // otherwise mark the app for automatic termination and could quit it, taking the
+        // server `drop watch` relies on with it. It runs until the user quits it (spec §4).
+        // SwiftUI turns support on at runtime, so the Info.plist opt-out alone isn't enough.
+        ProcessInfo.processInfo.automaticTerminationSupportEnabled = false
+        ProcessInfo.processInfo.disableAutomaticTermination("Agent Drop serves drop watch and other apps")
         DockIcon.apply(hidden: model.settings.hideDockIcon)
         Task {
             await model.launch()

@@ -12,6 +12,8 @@ public enum DropFormatting {
     }
 
     public static func relativeTime(_ date: Date, relativeTo now: Date = Date()) -> String {
+        // Under a minute old (or a moment "ahead", from another process's clock).
+        guard now.timeIntervalSince(date) >= 60 else { return "just now" }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: now)

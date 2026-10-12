@@ -8,6 +8,9 @@ struct DropListView: View {
 
     var body: some View {
         content
+            // Rows inserted while the window is open were measured one line tall (titles
+            // only). Every row is three lines, so a fixed minimum keeps them all whole.
+            .environment(\.defaultMinListRowHeight, DropRow.height)
             .searchable(text: $library.search, placement: .toolbar, prompt: "Title, description, filename")
             .navigationTitle(title)
     }
@@ -60,6 +63,7 @@ struct DropListView: View {
 }
 
 struct DropRow: View {
+    static let height: CGFloat = 54
     let drop: Drop
 
     var body: some View {
@@ -85,6 +89,7 @@ struct DropRow: View {
                 }
             }
         }
+        .frame(minHeight: DropRow.height - 8, alignment: .top)
         .opacity(drop.missing ? 0.5 : 1)
         .help(drop.missing ? "The file is no longer in the drop folder." : drop.filename)
     }

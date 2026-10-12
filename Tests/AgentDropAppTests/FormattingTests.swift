@@ -19,6 +19,16 @@ struct FormattingTests {
         #expect(DropFormatting.menuLine(drop(project: nil), relativeTo: now).contains("Auth plan — djleague/build-x"))
     }
 
+    @Test func aJustCreatedDropNeverReadsAsInTheFuture() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        // The formatter alone says "in 0s" for the current moment, and the CLI's clock can
+        // be a moment ahead of the window's.
+        #expect(DropFormatting.relativeTime(now.addingTimeInterval(1.5), relativeTo: now) == "just now")
+        #expect(DropFormatting.relativeTime(now, relativeTo: now) == "just now")
+        #expect(DropFormatting.relativeTime(now.addingTimeInterval(-59), relativeTo: now) == "just now")
+        #expect(DropFormatting.relativeTime(now.addingTimeInterval(-120), relativeTo: now) != "just now")
+    }
+
     @Test func longTitlesAreShortened() {
         let line = DropFormatting.menuLine(drop(title: String(repeating: "x", count: 100)))
         #expect(line.contains(String(repeating: "x", count: 59) + "…"))

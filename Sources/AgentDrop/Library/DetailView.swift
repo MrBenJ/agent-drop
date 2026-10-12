@@ -59,6 +59,7 @@ struct DropDetailView: View {
                 FilePreview(root: folder, relativePath: drop.filename, revision: library.revision)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $editing) { EditMetadataSheet(library: library, drop: drop) }
         .sheet(isPresented: $finishing) { DoneSheet(library: library, drop: drop) }
         .confirmationDialog("Remove the record for “\(drop.title)”?", isPresented: $confirmingRemove) {
@@ -164,6 +165,7 @@ struct EntryDetailView: View {
                 FilePreview(root: folder, relativePath: entry.name, revision: library.revision)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $registering) { RegisterSheet(library: library, entry: entry) }
     }
 }
