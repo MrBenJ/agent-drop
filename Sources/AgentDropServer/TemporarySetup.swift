@@ -1,7 +1,7 @@
 import AgentDropCore
 import Foundation
 
-/// For `agentdrop-devhost` only, until the app exists (Plan 3): marks setup complete and
+/// For `agentdrop-devhost` only, on a machine without the app's setup: marks setup complete and
 /// confirms a protected folder for as long as the dev host runs, then puts both keys back
 /// exactly as they were (absent keys are removed; a config.json that didn't exist is
 /// deleted again), so the app's real first-run setup still happens later.

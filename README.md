@@ -4,9 +4,8 @@ A small macOS app + CLI that gives coding agents (Claude Code, Codex, pi, …) a
 drop folder with context: what each file is, why it exists, which project it's from,
 and whether a handoff has been picked up.
 
-**Status:** the `drop` CLI works today (Plan 1). The local server and `drop watch` are built
-(Plan 2); the macOS app that hosts the server is next (Plan 3). Until then,
-`agentdrop-devhost` stands in for the app (see below). See
+**Status:** v0.1: the `drop` CLI, the local server with `drop watch`, and AgentDrop.app
+(menu bar + main window). Build from source; the app is not notarized yet. See
 [the design spec](docs/superpowers/specs/2026-10-11-agent-drop-design.md).
 
 ## Install (from source)
@@ -18,7 +17,18 @@ git clone https://github.com/MrBenJ/agent-drop.git
 cd agent-drop
 swift build -c release --product drop
 cp .build/release/drop /usr/local/bin/drop   # or anywhere on your PATH
+
+Scripts/build-app.sh                          # builds .build/AgentDrop.app
+cp -R .build/AgentDrop.app /Applications/
+open /Applications/AgentDrop.app              # first launch: setup
 ```
+
+The app is ad-hoc signed, not notarized. If macOS refuses to open it, right-click it in
+Finder → **Open** once.
+
+The first launch shows setup: it shows the drop folder (default `~/AgentDrop`) and asks
+whether Agent Drop should start at login. Until setup is finished, the app doesn't touch
+the drop folder. The CLI works without the app at any time.
 
 ## Quick start
 
@@ -31,6 +41,9 @@ drop done <id> --note "shipped in PR #42"
 ```
 
 Teach your agents with `drop agent-instructions >> CLAUDE.md` (or `AGENTS.md`).
+
+`drop open <id>` shows a drop in the app (rendered Markdown, file previews, handoff
+buttons). The menu bar icon counts unread drops.
 
 `--from`, `--by`, `--project` and tags are yours to define. Agent Drop never guesses them.
 Its only convention is `/` as an optional level separator (`drop list --from-under team`).
@@ -45,16 +58,13 @@ drop watch <id> --json                   # every change to one drop, as JSON lin
 drop watch --inbox --once                # wait for the next arrival, then exit
 ```
 
-It launches the app in the background if it isn't running. **Until the app exists**,
-run the development stand-in in another terminal instead:
+It launches the app in the background (no window, menu bar icon only) if it isn't
+running, and needs the app's setup to be finished.
 
-```bash
-swift run agentdrop-devhost --temporary-setup
-```
-
-It serves your configured drop folder exactly as the app will (content watcher, local
-server, `server.json`) until Ctrl-C. `--temporary-setup` marks the app's first-run setup
-as done only while it runs, and puts `config.json` back exactly as it was on exit.
+For development without the app, `swift run agentdrop-devhost --temporary-setup` serves
+the configured folder the same way from a terminal until Ctrl-C. `--temporary-setup`
+marks setup as done only while it runs and puts `config.json` back on exit. Don't run it
+while the app is running.
 
 ## What Agent Drop stores and deletes
 

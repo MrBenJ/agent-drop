@@ -62,7 +62,7 @@ public struct CLIContext: Sendable {
         self.serverWait = serverWait
     }
 
-    /// AgentDrop.app's bundle identifier (Plan 3 builds the app with it).
+    /// AgentDrop.app's bundle identifier (App/Info.plist).
     public static let appBundleID = "io.github.mrbenj.AgentDrop"
 
     @TaskLocal public static var current: CLIContext = .live()

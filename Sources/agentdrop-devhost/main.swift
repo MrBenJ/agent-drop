@@ -1,6 +1,7 @@
-// A stand-in for AgentDrop.app until Plan 3 builds it: hosts the same AgentDropService
-// (content watcher + local server + server.json) in the foreground, so `drop watch` and
-// other clients can be tried today. Not shipped; run it with `swift run agentdrop-devhost`.
+// A development stand-in for AgentDrop.app without a window: hosts the same
+// AgentDropService (content watcher + local server + server.json) in the foreground, so
+// `drop watch` and other clients can be tried from a terminal. Not shipped; run it with
+// `swift run agentdrop-devhost`. Don't run it while the app is running: both would serve.
 import AgentDropCore
 import AgentDropServer
 import Foundation
@@ -8,11 +9,11 @@ import Foundation
 let usage = """
     usage: swift run agentdrop-devhost [--temporary-setup]
 
-    Serves the drop folder from config.json the way the app will, until Ctrl-C.
+    Serves the drop folder from config.json the way the app does, until Ctrl-C.
 
-    --temporary-setup  The app's first-run setup hasn't happened yet (it can't: the app is
-                       Plan 3). This marks setup complete, and confirms a protected drop
-                       folder, only while the dev host runs. Both values are put back on exit.
+    --temporary-setup  For a machine where the app's first-run setup hasn't happened. This
+                       marks setup complete, and confirms a protected drop folder, only
+                       while the dev host runs. Both values are put back on exit.
     """
 
 let arguments = Set(CommandLine.arguments.dropFirst())
@@ -68,7 +69,7 @@ do {
     state = try await service.start()
 } catch let error as AgentDropError {
     if error.message == ServiceMessages.setupIncomplete || error.message == ServiceMessages.confirmFolder {
-        fail("\(error.message)\n(pass --temporary-setup to run before the app exists)")
+        fail("\(error.message)\n(pass --temporary-setup to run without the app's setup)")
     }
     fail(error.message)
 } catch {
