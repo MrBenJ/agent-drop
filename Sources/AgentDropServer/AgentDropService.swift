@@ -20,6 +20,9 @@ public actor AgentDropService {
         public var debounce: Duration = .milliseconds(300)
         public var heartbeat: Duration = .seconds(15)
         public var pid: Int32 = ProcessInfo.processInfo.processIdentifier
+        /// Called (on no particular thread) whenever the folder or the store may have
+        /// changed: a commit, a CLI write, an entry added or removed. The app reloads on it.
+        public var onChange: @Sendable () -> Void = {}
 
         public init() {}
     }
@@ -103,12 +106,20 @@ public actor AgentDropService {
 
         let folder = config.folderURL(settings)
         let store = try DropStore.open(folder: folder, retention: settings.eventRetentionDays)
+        // Spec §3.2: reconcile on launch. A busy store is skipped; the next change to an
+        // entry re-checks that drop anyway.
+        _ = try? store.reconcile()
         let hub = try EventHub(store: store)
-        store.observeEventCommits { Task { await hub.poke() } }
+        let onChange = options.onChange
+        store.observeEventCommits {
+            Task { await hub.poke() }
+            onChange()
+        }
         await hub.startHeartbeat(every: options.heartbeat)
         let content = ContentWatcher(store: store, debounce: options.debounce, onChange: { await hub.poke() })
         await content.baselineNewDrops()
         let watcher = FolderWatcher(folder: folder) { changes in
+            onChange()
             Task {
                 for change in changes {
                     switch change {
