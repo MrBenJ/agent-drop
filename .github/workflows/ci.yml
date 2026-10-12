@@ -10,3 +10,6 @@ jobs:
       - uses: actions/checkout@v4
       - run: swift --version
       - run: swift test
+      - run: swift build -c release --product drop
+      - name: Real-binary smoke test (ephemeral runner only)
+        run: Scripts/smoke.sh .build/release/drop

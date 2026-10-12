@@ -1,7 +1,7 @@
 # Agent Drop — Design
 
 **Date:** 2026-10-11
-**Status:** Draft for review
+**Status:** Approved (2026-10-11)
 **Repo:** `MrBenJ/agent-drop` (public, MIT)
 
 ## 1. Purpose
