@@ -11,7 +11,7 @@ struct HTTPAccessTests {
         let (body, status) = try await wrong.get("/drops")
         #expect(status == 401)
         #expect(String(decoding: body, as: UTF8.self) == #"{"error":"missing or invalid token","status":401}"#)
-        let noAuth = try rawHTTP(port: s.server.port, "GET /drops HTTP/1.1\r\nHost: 127.0.0.1:\(s.server.port)\r\nConnection: close\r\n\r\n")
+        let noAuth = try await rawHTTP(port: s.server.port, "GET /drops HTTP/1.1\r\nHost: 127.0.0.1:\(s.server.port)\r\nConnection: close\r\n\r\n")
         #expect(noAuth.hasPrefix("HTTP/1.1 401"))
     }
 
@@ -19,7 +19,7 @@ struct HTTPAccessTests {
     func foreignHostIs403EvenWithTheToken(_ host: String) async throws {
         let s = try await ServerFixture()
         defer { Task { await s.server.stop() } }
-        let response = try rawHTTP(port: s.server.port,
+        let response = try await rawHTTP(port: s.server.port,
             "GET /drops HTTP/1.1\r\nHost: \(host)\r\nAuthorization: Bearer \(s.server.token)\r\nConnection: close\r\n\r\n")
         #expect(response.hasPrefix("HTTP/1.1 403"))
         #expect(response.contains(#""status":403"#))
@@ -29,7 +29,7 @@ struct HTTPAccessTests {
         let s = try await ServerFixture()
         defer { Task { await s.server.stop() } }
         for host in ["127.0.0.1:\(s.server.port)", "localhost:\(s.server.port)"] {
-            let response = try rawHTTP(port: s.server.port,
+            let response = try await rawHTTP(port: s.server.port,
                 "GET /drops HTTP/1.1\r\nHost: \(host)\r\nAuthorization: Bearer \(s.server.token)\r\nConnection: close\r\n\r\n")
             #expect(response.hasPrefix("HTTP/1.1 200"), "\(host)")
         }

@@ -94,7 +94,17 @@ struct ServerFixture {
 func randomPortBase() -> Int { Int.random(in: 20_000...59_000) }
 
 /// Sends raw bytes, so tests can control headers URLSession would rewrite (e.g. `Host`).
-func rawHTTP(port: Int, _ request: String) throws -> String {
+/// The blocking socket calls run on a GCD thread: blocking a Swift concurrency thread
+/// would starve the server under test on small CI machines.
+func rawHTTP(port: Int, _ request: String) async throws -> String {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global().async {
+            continuation.resume(with: Result { try blockingRawHTTP(port: port, request) })
+        }
+    }
+}
+
+private func blockingRawHTTP(port: Int, _ request: String) throws -> String {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
     precondition(fd >= 0)
     defer { close(fd) }
