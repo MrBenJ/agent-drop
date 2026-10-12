@@ -9,6 +9,7 @@ final class TestEnv: @unchecked Sendable {
     let cwd: URL
     var stdin = Data()
     var codeExecutable: URL?
+    var useRealProcess = false
     let clock = Date(timeIntervalSince1970: 1_760_208_240)
     private let lock = NSLock()
     private var _processCalls: [(URL, [String])] = []
@@ -45,11 +46,13 @@ final class TestEnv: @unchecked Sendable {
     func run(_ arguments: String...) -> Result {
         let out = OutputSink(), err = OutputSink()
         let stdin = self.stdin, clock = self.clock, code = self.codeExecutable
+        let useRealProcess = self.useRealProcess
         let context = CLIContext(
             config: config, cwd: cwd, now: { clock }, readStdin: { stdin },
             stdout: out, stderr: err,
             findExecutable: { $0 == "code" ? code : nil },
             runProcess: { [weak self] executable, args in
+                if useRealProcess { return try CLIContext.live().runProcess(executable, args) }
                 self?.lock.withLock { self?._processCalls.append((executable, args)) }
                 return 0
             })

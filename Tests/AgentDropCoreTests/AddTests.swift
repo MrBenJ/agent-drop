@@ -5,6 +5,75 @@ import Testing
 struct AddTests {
     let fm = FileManager.default
 
+    @Test(arguments: [("case.md", "CASE.md"), ("caf\u{e9}.md", "cafe\u{301}.md")])
+    func caseVariantOfRegisteredEntryIsStillAConflict(_ names: (String, String)) throws {
+        let f = try Fixture()
+        let drop = try f.add(names.0)
+        let alias = f.folder.appendingPathComponent(names.1)
+        // This alias exists only on a case-insensitive filesystem.
+        guard fm.fileExists(atPath: alias.path) else { return }
+        expectError(3) { _ = try f.store.add(AddRequest(source: .path(alias), from: "second")) }
+        #expect(try f.store.list(ListFilter()).map(\.id) == [drop.id])
+    }
+
+    @Test func failedFolderCopyLeavesNoPartialDrop() throws {
+        let f = try Fixture()
+        let unreadable = try f.tmp.file("outside/broken/no-read.txt", "private")
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable.path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: unreadable.path) }
+        do {
+            _ = try f.store.add(AddRequest(source: .path(unreadable.deletingLastPathComponent()), from: "a"))
+            Issue.record("expected unreadable file to fail copying")
+        } catch {}
+        #expect(!fm.fileExists(atPath: f.folder.appendingPathComponent("broken").path))
+        #expect(try f.store.events().isEmpty)
+    }
+
+    @Test func concurrentInPlaceRegistrationCannotLoseCopiedFile() throws {
+        let f = try Fixture()
+        let source = try f.outside("race.md", "keep this content")
+        let placed = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let finished = DispatchGroup()
+        let registrationFinished = DispatchSemaphore(value: 0)
+        let successes = Locked<[Drop]>([])
+        let copier = try DropStore.open(folder: f.folder, retention: .default, now: {
+            placed.signal()
+            _ = resume.wait(timeout: .now() + 10)
+            return Date()
+        })
+        let registrar = try DropStore.open(folder: f.folder, retention: .default)
+        finished.enter()
+        DispatchQueue.global().async {
+            defer { finished.leave() }
+            do {
+                let drop = try copier.add(AddRequest(source: .path(source), from: "copier"))
+                successes.withLock { $0.append(drop) }
+            } catch let error as AgentDropError where error.exitCode == 3 {} catch {
+                Issue.record("unexpected copy error: \(error)")
+            }
+        }
+        #expect(placed.wait(timeout: .now() + 5) == .success)
+        finished.enter()
+        DispatchQueue.global().async {
+            defer { registrationFinished.signal(); finished.leave() }
+            do {
+                let drop = try registrar.add(AddRequest(
+                    source: .path(f.folder.appendingPathComponent("race.md")), from: "registrar"))
+                successes.withLock { $0.append(drop) }
+            } catch let error as AgentDropError where error.exitCode == 3 {} catch {
+                Issue.record("unexpected registration error: \(error)")
+            }
+        }
+        // A competing registrar either finishes or waits on the store's write lock.
+        _ = registrationFinished.wait(timeout: .now() + 0.2)
+        resume.signal()
+        #expect(finished.wait(timeout: .now() + 10) == .success)
+        #expect(successes.value.count == 1)
+        #expect(try String(contentsOf: f.folder.appendingPathComponent("race.md"), encoding: .utf8) == "keep this content")
+        #expect(try f.store.events().count == 1)
+    }
+
     @Test func copiesFileRegistersAndEmitsCreated() throws {
         let f = try Fixture()
         let src = try f.outside("auth-plan.md", "intro\n# Auth refactor plan\nbody")

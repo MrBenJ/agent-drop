@@ -48,28 +48,30 @@ extension DropStore {
         let title = try request.title.map { try Validation.text($0, field: "--title") }
         let description = try request.description.map { try Validation.text($0, field: "--desc") }
 
-        let placement = try place(request)
-        do {
-            let url = folder.appendingPathComponent(placement.filename)
-            let finalTitle = title
-                ?? TitleExtractor.title(for: url, isFolder: placement.isFolder)
-                ?? TitleExtractor.fallback(filename: placement.filename, isFolder: placement.isFolder)
-            return try insert(placement, title: finalTitle, description: description, project: project,
-                              tags: tags, from: from, handoff: request.handoff)
-        } catch {
-            if let copy = placement.cleanupOnFailure { try? FileManager.default.removeItem(at: copy) }
-            throw error
+        // Hold the cross-process write lock from placement through registration and
+        // cleanup. Another agent must not register a copy that we may still remove.
+        return try mutate { db in
+            let placement = try place(request, db: db)
+            do {
+                let url = folder.appendingPathComponent(placement.filename)
+                let finalTitle = title
+                    ?? TitleExtractor.title(for: url, isFolder: placement.isFolder)
+                    ?? TitleExtractor.fallback(filename: placement.filename, isFolder: placement.isFolder)
+                return try insert(placement, db: db, title: finalTitle, description: description, project: project,
+                                  tags: tags, from: from, handoff: request.handoff)
+            } catch {
+                if let copy = placement.cleanupOnFailure { try? FileManager.default.removeItem(at: copy) }
+                throw error
+            }
         }
     }
 
-    func isRegistered(filename: String) throws -> Bool {
-        try read { db in
-            try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM drops WHERE filename = ?)",
-                              arguments: [filename]) ?? false
-        }
+    private func isRegistered(filename: String, db: Database) throws -> Bool {
+        try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM drops WHERE filename = ?)",
+                          arguments: [filename]) ?? false
     }
 
-    private func place(_ request: AddRequest) throws -> Placement {
+    private func place(_ request: AddRequest, db: Database) throws -> Placement {
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
 
@@ -81,7 +83,11 @@ extension DropStore {
             let name = try Validation.dropName(rawName)
             guard !data.isEmpty else { throw AgentDropError.invalid("stdin was empty; nothing to drop") }
             guard !request.move else { throw AgentDropError.invalid("--move can't be used with stdin") }
-            let final = try claimName(name, isFolder: false) { try data.write(to: $0, options: .withoutOverwriting) }
+            let staging = try stagingDirectory()
+            defer { try? fm.removeItem(at: staging) }
+            let staged = staging.appendingPathComponent("content")
+            try data.write(to: staged, options: .withoutOverwriting)
+            let final = try claimName(name, isFolder: false, db: db) { try fm.moveItem(at: staged, to: $0) }
             return Placement(filename: final, isFolder: false, cleanupOnFailure: folder.appendingPathComponent(final))
 
         case .path(let rawSource):
@@ -111,8 +117,8 @@ extension DropStore {
 
             if parent == root {
                 // Already a top-level entry: register in place (optionally renaming).
-                let current = source.lastPathComponent
-                if try isRegistered(filename: current) {
+                let current = try canonicalEntryName(for: source)
+                if try isRegistered(filename: current, db: db) {
                     throw AgentDropError.conflict("\(current) is already registered")
                 }
                 guard let requested = request.name, requested != current else {
@@ -121,7 +127,7 @@ extension DropStore {
                 }
                 let name = try Validation.dropName(requested)
                 let destination = folder.appendingPathComponent(name)
-                let taken = try isRegistered(filename: name)
+                let taken = try isRegistered(filename: name, db: db)
                 if taken || fm.fileExists(atPath: destination.path) {
                     throw AgentDropError.conflict("\(name) already exists in the drop folder")
                 }
@@ -135,26 +141,53 @@ extension DropStore {
             }
 
             let name = try Validation.dropName(request.name ?? source.lastPathComponent)
-            let final = try claimName(name, isFolder: isFolder) { destination in
-                if request.move {
-                    try fm.moveItem(at: source, to: destination)
-                } else {
-                    try fm.copyItem(at: source, to: destination)
-                }
+            let final: String
+            if request.move {
+                final = try claimName(name, isFolder: isFolder, db: db) { try fm.moveItem(at: source, to: $0) }
+            } else {
+                let staging = try stagingDirectory()
+                defer { try? fm.removeItem(at: staging) }
+                let staged = staging.appendingPathComponent("content", isDirectory: isFolder)
+                try fm.copyItem(at: source, to: staged)
+                final = try claimName(name, isFolder: isFolder, db: db) { try fm.moveItem(at: staged, to: $0) }
             }
             return Placement(filename: final, isFolder: isFolder,
                              cleanupOnFailure: request.move ? nil : folder.appendingPathComponent(final))
         }
     }
 
+    private func stagingDirectory() throws -> URL {
+        let url = folder.appendingPathComponent(".agentdrop/staging/\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    /// Preserve the actual directory-entry spelling when the filesystem accepts an
+    /// alias (case or Unicode normalization). Distinct hard-linked entries stay distinct.
+    private func canonicalEntryName(for source: URL) throws -> String {
+        let fm = FileManager.default
+        let names = try fm.contentsOfDirectory(atPath: folder.path)
+        let requested = source.lastPathComponent
+        if let exact = names.first(where: { $0.utf8.elementsEqual(requested.utf8) }) { return exact }
+        let sourceAttributes = try fm.attributesOfItem(atPath: source.path)
+        for name in names where name.compare(requested, options: [.caseInsensitive]) == .orderedSame {
+            let attributes = try fm.attributesOfItem(atPath: folder.appendingPathComponent(name).path)
+            if attributes[.systemNumber] as? NSNumber == sourceAttributes[.systemNumber] as? NSNumber,
+               attributes[.systemFileNumber] as? NSNumber == sourceAttributes[.systemFileNumber] as? NSNumber {
+                return name
+            }
+        }
+        throw AgentDropError.notFound("No directory entry matches '\(requested)'")
+    }
+
     /// Writes to the first free name (`plan.md`, `plan-2.md`, …). Losing a race to another
     /// writer surfaces as "file exists" and moves on to the next candidate.
-    private func claimName(_ name: String, isFolder: Bool, write: (URL) throws -> Void) throws -> String {
+    private func claimName(_ name: String, isFolder: Bool, db: Database, write: (URL) throws -> Void) throws -> String {
         for n in 1...1_000 {
             let candidate = n == 1 ? name : Validation.suffixed(name, n: n, isFolder: isFolder)
             let destination = folder.appendingPathComponent(candidate)
             if FileManager.default.fileExists(atPath: destination.path) { continue }
-            if try isRegistered(filename: candidate) { continue }
+            if try isRegistered(filename: candidate, db: db) { continue }
             do {
                 try write(destination)
                 return candidate
@@ -165,36 +198,34 @@ extension DropStore {
         throw AgentDropError.conflict("Couldn't find a free name for \(name)")
     }
 
-    private func insert(_ placement: Placement, title: String, description: String?, project: String?,
+    private func insert(_ placement: Placement, db: Database, title: String, description: String?, project: String?,
                         tags: [String], from: String, handoff: Bool) throws -> Drop {
         let now = self.now()
         do {
-            return try mutate { db in
-                var id = DropID.generate()
-                while try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM drops WHERE id = ?)",
-                                        arguments: [id]) == true {
-                    id = DropID.generate()
-                }
-                let drop = Drop(id: id, filename: placement.filename, isFolder: placement.isFolder, title: title,
-                                description: description, project: project, tags: tags, from: from,
-                                createdAt: now, updatedAt: now, readAt: nil,
-                                kind: handoff ? .handoff : .note, status: handoff ? .open : nil,
-                                claimedBy: nil, statusNote: nil, archived: false, missing: false)
-                try db.execute(
-                    sql: """
-                        INSERT INTO drops (id, filename, is_folder, title, description, project, from_identity,
-                                           created_at, updated_at, kind, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                    arguments: [drop.id, drop.filename, drop.isFolder, drop.title, drop.description, drop.project,
-                                drop.from, now.unixTime, now.unixTime, drop.kind.rawValue, drop.status?.rawValue])
-                for tag in tags {
-                    try db.execute(sql: "INSERT INTO drop_tag (drop_id, tag) VALUES (?, ?)", arguments: [id, tag])
-                }
-                try EventLog.append(db, type: .created, dropID: id, dataJSON: EventLog.encode(json(drop)),
-                                    before: nil, after: drop, at: now, retention: retention)
-                return drop
+            var id = DropID.generate()
+            while try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM drops WHERE id = ?)",
+                                    arguments: [id]) == true {
+                id = DropID.generate()
             }
+            let drop = Drop(id: id, filename: placement.filename, isFolder: placement.isFolder, title: title,
+                            description: description, project: project, tags: tags, from: from,
+                            createdAt: now, updatedAt: now, readAt: nil,
+                            kind: handoff ? .handoff : .note, status: handoff ? .open : nil,
+                            claimedBy: nil, statusNote: nil, archived: false, missing: false)
+            try db.execute(
+                sql: """
+                    INSERT INTO drops (id, filename, is_folder, title, description, project, from_identity,
+                                       created_at, updated_at, kind, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [drop.id, drop.filename, drop.isFolder, drop.title, drop.description, drop.project,
+                            drop.from, now.unixTime, now.unixTime, drop.kind.rawValue, drop.status?.rawValue])
+            for tag in tags {
+                try db.execute(sql: "INSERT INTO drop_tag (drop_id, tag) VALUES (?, ?)", arguments: [id, tag])
+            }
+            try EventLog.append(db, type: .created, dropID: id, dataJSON: EventLog.encode(json(drop)),
+                                before: nil, after: drop, at: now, retention: retention)
+            return drop
         } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
             throw AgentDropError.conflict("\(placement.filename) is already registered")
         }

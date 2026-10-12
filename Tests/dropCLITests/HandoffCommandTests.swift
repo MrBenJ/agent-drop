@@ -3,6 +3,21 @@ import Testing
 @testable import DropCLI
 
 struct HandoffCommandTests {
+    @Test func codeFailureCapturesDiagnosticsInJsonError() throws {
+        let env = try TestEnv()
+        let fake = try env.file("fake-code", "#!/bin/sh\necho child-output\necho child-error >&2\nexit 5\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fake.path)
+        env.codeExecutable = fake
+        env.useRealProcess = true
+        try env.file("p.md", "content")
+        let id = env.run("add", "p.md", "--from", "a").trimmedOut
+        let result = env.run("code", id, "--json")
+        #expect(result.code == 1 && result.err.isEmpty)
+        let message = result.json["error"] as? String ?? ""
+        #expect(message.contains("child-output") && message.contains("child-error"))
+        #expect(message.contains("5"))
+    }
+
     func handoff(_ env: TestEnv, project: String = "p") throws -> String {
         env.stdin = Data("# Do the thing".utf8)
         return env.run("add", "-", "--name", "task-\(UUID().uuidString.prefix(4)).md", "--from", "agent-a",

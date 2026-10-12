@@ -4,6 +4,30 @@ import Testing
 @testable import AgentDropCore
 
 struct QueryTests {
+    @Test func idAndFilenameAmbiguityDoesNotReadTheWrongDrop() throws {
+        let f = try Fixture()
+        let first = try f.add("first.md")
+        _ = try f.add(first.id, "second file")
+        expectError(1) { _ = try f.store.resolve(first.id) }
+        #expect(try f.store.resolve("first.md").id == first.id)
+    }
+
+    @Test func restoredFileBecomesAvailableAndCannotBeRemoved() throws {
+        let f = try Fixture()
+        let drop = try f.add("restored.md", handoff: true)
+        let path = f.store.path(of: drop)
+        try FileManager.default.removeItem(at: path)
+        #expect(try f.store.resolve(drop.id).missing)
+        try Data("restored".utf8).write(to: path)
+        expectError(1) { try f.store.removeRecord(drop.id) }
+        #expect(try !f.store.resolve(drop.id).missing)
+        #expect(try f.store.inbox(project: nil).map(\.id) == [drop.id])
+        let events = try f.store.events()
+        #expect(events.map(\.type) == [.created, .missing, .metadata])
+        #expect(events.last?.inboxAfter == true)
+        #expect(try String(contentsOf: path, encoding: .utf8) == "restored")
+    }
+
     @Test func resolveByIdThenExactFilename() throws {
         let f = try Fixture()
         let drop = try f.add("auth-plan.md")

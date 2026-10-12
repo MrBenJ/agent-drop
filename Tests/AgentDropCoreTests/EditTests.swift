@@ -3,6 +3,57 @@ import Testing
 @testable import AgentDropCore
 
 struct EditTests {
+    @Test func concurrentRemovalEmitsOnlyOneRemovedEvent() throws {
+        let f = try Fixture()
+        let drop = try f.add("gone.md")
+        try FileManager.default.removeItem(at: f.store.path(of: drop))
+        _ = try f.store.resolve(drop.id)
+        let ready = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let finished = DispatchGroup()
+        let removals = Locked(0)
+        let stores = try (0..<2).map { _ in
+            try DropStore.open(folder: f.folder, retention: .default, now: {
+                ready.signal()
+                _ = resume.wait(timeout: .now() + 10)
+                return Date()
+            })
+        }
+        for store in stores {
+            finished.enter()
+            DispatchQueue.global().async {
+                defer { finished.leave() }
+                do {
+                    try store.removeRecord(drop.id)
+                    removals.withLock { $0 += 1 }
+                } catch let error as AgentDropError where error.exitCode == 2 {} catch {
+                    Issue.record("unexpected removal error: \(error)")
+                }
+            }
+        }
+        #expect(ready.wait(timeout: .now() + 5) == .success)
+        #expect(ready.wait(timeout: .now() + 5) == .success)
+        resume.signal(); resume.signal()
+        #expect(finished.wait(timeout: .now() + 10) == .success)
+        #expect(removals.value == 1)
+        #expect(try f.store.events().filter { $0.type == .removed }.count == 1)
+    }
+
+    @Test func eitherKindIsRejectedWhileClaimedOrDone() throws {
+        let f = try Fixture()
+        let handoff = try f.add("locked.md", handoff: true)
+        _ = try f.store.claim(handoff.id, by: "agent")
+        for kind in DropKind.allCases {
+            expectError(3) { _ = try f.store.edit(handoff.id, EditRequest(title: "Blocked", kind: kind)) }
+        }
+        #expect(try f.store.resolve(handoff.id).title == "Plan")
+        _ = try f.store.done(handoff.id, note: nil)
+        for kind in DropKind.allCases {
+            expectError(3) { _ = try f.store.edit(handoff.id, EditRequest(kind: kind)) }
+        }
+        #expect(try f.store.events().map(\.type) == [.created, .status, .status])
+    }
+
     @Test func editChangesFieldsAndEmitsOneMetadataEvent() throws {
         let f = try Fixture()
         let drop = try f.add("p.md", tags: ["a"])

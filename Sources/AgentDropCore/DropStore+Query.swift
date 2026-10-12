@@ -18,34 +18,47 @@ public struct ListFilter: Equatable, Sendable {
 }
 
 extension DropStore {
-    /// Id first, then exact filename (spec §3.1). Marks the drop missing (with one `missing`
-    /// event) if its file is gone (spec §3.2 "lazily when it resolves an id").
+    /// Exact id or filename (spec §3.1); distinct matches are an ambiguity error.
+    /// Refreshes missing state lazily (spec §3.2), emitting one event when it changes.
     public func resolve(_ ref: String) throws -> Drop {
         let found: Drop? = try read { db in
-            if DropID.isWellFormed(ref), let drop = try Self.fetchDrop(db, id: ref) { return drop }
-            guard let id = try String.fetchOne(db, sql: "SELECT id FROM drops WHERE filename = ?",
-                                               arguments: [ref]) else { return nil }
-            return try Self.fetchDrop(db, id: id)
+            let byID = DropID.isWellFormed(ref) ? try Self.fetchDrop(db, id: ref) : nil
+            let filenameID = try String.fetchOne(db, sql: "SELECT id FROM drops WHERE filename = ?",
+                                                arguments: [ref])
+            if let byID, let filenameID, byID.id != filenameID {
+                throw AgentDropError.invalid("'\(ref)' matches an id and a different filename; use the other filename or id")
+            }
+            if let byID { return byID }
+            return try filenameID.flatMap { try Self.fetchDrop(db, id: $0) }
         }
         guard let drop = found else { throw AgentDropError.notFound("No drop matches '\(ref)'") }
         return try refreshMissing(drop)
     }
 
     private func refreshMissing(_ drop: Drop) throws -> Drop {
-        guard !drop.missing, !FileManager.default.fileExists(atPath: path(of: drop).path) else { return drop }
+        guard drop.missing == entryIsPresent(drop) else { return drop }
         let now = self.now()
         return try mutate { db in
             guard let before = try Self.fetchDrop(db, id: drop.id) else {
                 throw AgentDropError.notFound("No drop matches '\(drop.id)'")
             }
-            guard !before.missing else { return before }
-            try db.execute(sql: "UPDATE drops SET missing = 1, updated_at = ? WHERE id = ?",
-                           arguments: [now.unixTime, drop.id])
+            let missing = !entryIsPresent(before)
+            guard before.missing != missing else { return before }
+            try db.execute(sql: "UPDATE drops SET missing = ?, updated_at = ? WHERE id = ?",
+                           arguments: [missing, now.unixTime, drop.id])
             let after = try Self.fetchDrop(db, id: drop.id)!
-            try EventLog.append(db, type: .missing, dropID: drop.id, dataJSON: "{}",
+            try EventLog.append(db, type: missing ? .missing : .metadata, dropID: drop.id,
+                                dataJSON: missing ? "{}" : EventLog.encodeObject(["missing": false]),
                                 before: before, after: after, at: now, retention: retention)
             return after
         }
+    }
+
+    /// A symlink or a replacement of the wrong kind is not the registered entry.
+    func entryIsPresent(_ drop: Drop) -> Bool {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path(of: drop).path)
+        let type = attributes?[.type] as? FileAttributeType
+        return type == (drop.isFolder ? .typeDirectory : .typeRegular)
     }
 
     /// Newest first (spec §4 `drop list`).

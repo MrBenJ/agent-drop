@@ -50,7 +50,7 @@ extension DropStore {
             if let project, project != before.project {
                 sets.append("project = ?"); setArguments.append(project); changes["project"] = project
             }
-            if let kind = request.kind, kind != before.kind {
+            if request.kind != nil {
                 if before.status == .claimed {
                     throw AgentDropError.conflict(
                         "\(before.id) is claimed by \(before.claimedBy ?? "unknown"); release it first")
@@ -58,6 +58,8 @@ extension DropStore {
                 if before.status == .done {
                     throw AgentDropError.conflict("\(before.id) is done; reopen it first")
                 }
+            }
+            if let kind = request.kind, kind != before.kind {
                 if kind == .handoff {
                     sets += ["kind = 'handoff'", "status = 'open'"]
                 } else {
@@ -141,9 +143,16 @@ extension DropStore {
         }
         let now = self.now()
         try mutate { db in
+            guard let before = try Self.fetchDrop(db, id: target.id) else {
+                throw AgentDropError.notFound("No drop matches '\(ref)'")
+            }
+            guard before.missing, !entryIsPresent(before) else {
+                throw AgentDropError.invalid("\(before.id) still has its file; only missing drops can be removed")
+            }
             try db.execute(sql: "DELETE FROM drops WHERE id = ?", arguments: [target.id])
+            guard db.changesCount == 1 else { throw AgentDropError.notFound("No drop matches '\(ref)'") }
             try EventLog.append(db, type: .removed, dropID: target.id, dataJSON: "{}",
-                                before: target, after: nil, at: now, retention: retention)
+                                before: before, after: nil, at: now, retention: retention)
         }
     }
 }

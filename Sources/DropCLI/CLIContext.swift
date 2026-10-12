@@ -70,8 +70,20 @@ public struct CLIContext: Sendable {
                 let process = Process()
                 process.executableURL = executable
                 process.arguments = arguments
+                // Drain both streams together before waiting, so even verbose children
+                // cannot fill a pipe or bypass the CLI's JSON/error output policy.
+                let output = Pipe()
+                process.standardOutput = output
+                process.standardError = output
                 try process.run()
+                let diagnostics = output.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    let detail = String(decoding: diagnostics, as: UTF8.self)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    throw AgentDropError.invalid("`\(executable.lastPathComponent)` exited with status \(process.terminationStatus)"
+                        + (detail.isEmpty ? "" : ": \(detail)"))
+                }
                 return process.terminationStatus
             })
     }
