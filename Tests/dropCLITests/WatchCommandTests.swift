@@ -225,6 +225,34 @@ struct WatchCommandTests {
         #expect(r.err.contains("Lost the connection to Agent Drop"))
     }
 
+    /// Review M3: the drop was deleted and its record removed while the server was down.
+    /// Same folder, so the watch replays `missing` and ends with exit 0, not "folder changed".
+    @Test func dropRemovedWhileDisconnectedReplaysAndExits0() async throws {
+        let env = try TestEnv()
+        try ready(env)
+        let service = service(env)
+        try await service.start()
+        let id = handoff(env, "gone.md")
+        let out = OutputSink()
+        let watch = Task { await env.runAsync(["watch", id, "--json"], out: out) }
+        #expect(await waitFor { await service.clientCount == 1 })
+        await service.stop()
+
+        let store = try DropStore.open(folder: env.dropFolder, retention: .default)
+        try FileManager.default.removeItem(at: env.dropFolder.appendingPathComponent("gone.md"))
+        _ = try store.checkPresence(id)
+        try store.removeRecord(id)
+        try await service.start()
+
+        let r = await watch.value
+        #expect(r.code == 0)
+        let types = r.out.split(separator: "\n").compactMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])?["type"] as? String
+        }
+        #expect(types == ["missing"])
+        await service.stop()
+    }
+
     @Test func eventsWhileReconnectingAreReplayed() async throws {
         let env = try TestEnv()
         try ready(env)

@@ -62,9 +62,10 @@ struct WatchSession {
                 return
             case .disconnected:
                 // The app quit, restarted its server, or switched folders. Keep the cursor:
-                // the same store replays what we missed; a new store sends `reset`.
+                // the same store replays what we missed (even for a drop removed meanwhile);
+                // a new store sends `reset`.
+                try await Task.sleep(for: .milliseconds(200))
                 client = try await connect(launchIfNeeded: false)
-                if let id = dropID { _ = try await lookUp(id, client: client, afterFolderChange: true) }
             }
         }
     }
@@ -89,7 +90,10 @@ struct WatchSession {
                 }
                 if let port = info.port, let token = info.token {
                     let client = AgentDropClient(port: port, token: token)
-                    let probe = try? await client.get("/drops", query: [URLQueryItem(name: "limit", value: "1")])
+                    let remaining = deadline - ContinuousClock.now
+                    let timeout = min(2, max(0.2, Double(remaining.components.seconds)))
+                    let probe = try? await client.get("/drops", query: [URLQueryItem(name: "limit", value: "1")],
+                                                      timeout: timeout)
                     if probe?.1 == 200 { return client }
                 }
             }
@@ -143,8 +147,18 @@ struct WatchSession {
         do {
             events = try await client.events(query: query, lastEventID: cursor.value, onCursor: { cursor.value = $0 })
         } catch let failure as AgentDropClient.HTTPFailure {
-            if failure.status == 404, let dropID { throw AgentDropError.notFound("No drop matches '\(dropID)'") }
-            throw AgentDropError.invalid(failure.message)
+            switch failure.status {
+            case 404 where dropID != nil:
+                // With a cursor from this store the server still accepts a removed drop,
+                // so a 404 here means the folder changed.
+                throw AgentDropError.notFound(cursor.value == nil
+                    ? "No drop matches '\(dropID!)'"
+                    : "drop folder changed; \(dropID!) is not in the current folder")
+            case 401, 503:
+                return .disconnected // token rotated by a restart, or store busy: reconnect
+            default:
+                throw AgentDropError.invalid(failure.message)
+            }
         } catch {
             return .disconnected
         }
