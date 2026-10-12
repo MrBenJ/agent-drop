@@ -185,10 +185,11 @@ struct WatchSession {
             return
         }
         guard let message = try? JSONDecoder().decode(EventMessage.self, from: Data(event.data.utf8)) else {
-            context.stdout.line(event.data)
+            context.stdout.line(Output.terminalSafe(event.data))
             return
         }
-        context.stdout.line([message.at, message.type, message.dropId, Self.summary(message)].joined(separator: "\t"))
+        context.stdout.line([message.at, message.type, message.dropId, Self.summary(message)]
+            .map { Output.terminalSafe($0) }.joined(separator: "\t"))
     }
 
     private func print(reset event: SSEEvent) {

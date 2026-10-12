@@ -61,7 +61,7 @@ public enum DropCLI {
         if json {
             context.stdout.line(Output.jsonString(ErrorJSON(error: message, code: code)))
         } else {
-            context.stderr.line("drop: \(message)")
+            context.stderr.line("drop: \(Output.terminalSafe(message))")
         }
     }
 }
