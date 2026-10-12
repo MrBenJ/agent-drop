@@ -122,6 +122,11 @@ reads only `config.json` (Application Support, no permission needed).
 - Everything inside a folder drop belongs to that drop; nested files are never drops
   of their own.
 - Symlinks are not drops: `drop add` rejects them, and reconciliation ignores them.
+- **Symlinks inside a folder drop** are copied (or moved) as links, never followed, so
+  `drop add` never pulls in what a link points to. The server and the app never follow
+  them either: they list a link as an entry with its target text (e.g.
+  `config → ../shared/config.json`) but never serve or render what it points to, so
+  nothing outside the drop folder is ever exposed.
 
 ### Metadata store
 
@@ -171,6 +176,10 @@ After setup is complete (§2), the app watches the folder with FSEvents (and rec
   "Remove record" action. Never silently deleted.
 - **File or directory renamed in Finder** → treated as missing + unregistered (no rename tracking in
   v1).
+- **Missing drop whose entry returns** (same exact name, same kind: file or directory) →
+  `missing = false` again, with one `metadata` event `{missing: false}`. A name that only
+  matches through a case or Unicode alias (`plan.md` for a missing `Plan.md`), a symlink,
+  or an entry of the other kind does not count as the drop returning.
 
 The CLI performs the same missing-file check lazily when it resolves an id.
 
@@ -386,7 +395,7 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 |---|---|---|
 | `created` | A drop is registered | the drop object |
 | `content` | The drop's file / folder contents changed | `{}` |
-| `metadata` | `drop edit` or the app's edit form changed metadata | changed fields |
+| `metadata` | `drop edit` or the app's edit form changed metadata, or a missing drop's entry returned (§3.2) | changed fields (`{missing: false}` for a return) |
 | `status` | Any §4.2 transition | `{from, to, claimedBy, statusNote}` |
 | `archived` | Archived or un-archived | `{archived}` |
 | `missing` | The drop's file / folder disappeared | `{}` |

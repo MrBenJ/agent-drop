@@ -101,7 +101,8 @@ struct HandoffCommandTests {
         let env = try TestEnv()
         let r = env.run("agent-instructions")
         #expect(r.code == 0)
-        for needle in ["drop add", "--from", "drop inbox", "drop claim", "--by", "drop done", "quote"] {
+        for needle in ["drop add", "--from", "drop inbox", "drop claim", "--by", "drop done", "quote",
+                       "store busy", "drop latest --cat"] {
             #expect(r.out.contains(needle), "missing \(needle)")
         }
         #expect(env.run("agent-instructions", "--json").json["instructions"] is String)

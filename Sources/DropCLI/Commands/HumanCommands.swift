@@ -49,7 +49,7 @@ struct AgentInstructions: ParsableCommand {
 
         If you can't finish, run `drop release <id>` so someone else can claim it.
 
-        Every command accepts `--json` (except `drop cat`). Exit codes: 0 ok, 1 error, 2 not found, 3 conflict.
+        Every command accepts `--json` (except `drop cat` and `drop latest --cat`, which print raw contents). Exit codes: 0 ok, 1 error, 2 not found, 3 conflict. If a command fails with "store busy, retry", another writer held the store for more than 5 seconds: wait a moment and run it again.
         """
 
     func run() throws {

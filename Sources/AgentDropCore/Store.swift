@@ -59,6 +59,14 @@ enum Schema {
     }
 }
 
+/// Test-only interception points inside `add`. Production code uses the defaults.
+struct StoreHooks: Sendable {
+    /// After a copy or stdin is staged, before the write lock is taken.
+    var afterStaging: @Sendable () throws -> Void = {}
+    /// After the entry is placed, before its record is inserted (inside the write lock).
+    var beforeInsert: @Sendable () throws -> Void = {}
+}
+
 /// The metadata store for one drop folder (spec §3 "Metadata store").
 public final class DropStore: Sendable {
     public let folder: URL
@@ -66,18 +74,25 @@ public final class DropStore: Sendable {
     let pool: DatabasePool
     let retention: Retention
     let now: @Sendable () -> Date
+    let hooks: StoreHooks
 
     private init(folder: URL, storeID: String, pool: DatabasePool, retention: Retention,
-                 now: @escaping @Sendable () -> Date) {
+                 now: @escaping @Sendable () -> Date, hooks: StoreHooks) {
         self.folder = folder
         self.storeID = storeID
         self.pool = pool
         self.retention = retention
         self.now = now
+        self.hooks = hooks
     }
 
     public static func open(folder: URL, retention: Retention,
                             now: @escaping @Sendable () -> Date = { Date() }) throws -> DropStore {
+        try open(folder: folder, retention: retention, now: now, hooks: StoreHooks())
+    }
+
+    static func open(folder: URL, retention: Retention, now: @escaping @Sendable () -> Date,
+                     hooks: StoreHooks) throws -> DropStore {
         let metaDir = folder.appendingPathComponent(".agentdrop", isDirectory: true)
         let path = metaDir.appendingPathComponent("index.sqlite").path
         do {
@@ -92,7 +107,8 @@ public final class DropStore: Sendable {
                 }
                 return try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'store_id'")!
             }
-            return DropStore(folder: folder, storeID: storeID, pool: pool, retention: retention, now: now)
+            return DropStore(folder: folder, storeID: storeID, pool: pool, retention: retention, now: now,
+                             hooks: hooks)
         } catch let error as AgentDropError {
             throw error
         } catch {

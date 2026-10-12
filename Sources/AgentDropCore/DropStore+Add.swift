@@ -33,11 +33,21 @@ public struct AddRequest: Sendable {
 }
 
 extension DropStore {
+    /// What `stage` prepared outside the write lock.
+    private enum Staged {
+        /// Our private copy (or stdin content) inside `.agentdrop/staging`, ready to move into place.
+        case copy(URL, isFolder: Bool, name: String)
+        /// `--move` from outside the drop folder.
+        case move(URL, isFolder: Bool, name: String)
+        /// Already a top-level entry; optionally renamed first.
+        case inPlace(URL, isFolder: Bool, rename: String?)
+    }
+
     private struct Placement {
         let filename: String
         let isFolder: Bool
-        /// Our own copy, removed if registration fails afterwards.
-        let cleanupOnFailure: URL?
+        /// Puts the filesystem back if registration fails afterwards.
+        let undo: () -> Void
     }
 
     /// Spec §4 `drop add`.
@@ -48,11 +58,19 @@ extension DropStore {
         let title = try request.title.map { try Validation.text($0, field: "--title") }
         let description = try request.description.map { try Validation.text($0, field: "--desc") }
 
+        // Copying can take a while, so it happens before the write lock: a large folder
+        // must not make other agents' writes time out.
+        var stagingDirectory: URL?
+        defer { if let stagingDirectory { try? FileManager.default.removeItem(at: stagingDirectory) } }
+        let staged = try stage(request, stagingDirectory: &stagingDirectory)
+        try hooks.afterStaging()
+
         // Hold the cross-process write lock from placement through registration and
         // cleanup. Another agent must not register a copy that we may still remove.
         return try mutate { db in
-            let placement = try place(request, db: db)
+            let placement = try place(staged, db: db)
             do {
+                try hooks.beforeInsert()
                 let url = folder.appendingPathComponent(placement.filename)
                 let finalTitle = title
                     ?? TitleExtractor.title(for: url, isFolder: placement.isFolder)
@@ -60,7 +78,7 @@ extension DropStore {
                 return try insert(placement, db: db, title: finalTitle, description: description, project: project,
                                   tags: tags, from: from, handoff: request.handoff)
             } catch {
-                if let copy = placement.cleanupOnFailure { try? FileManager.default.removeItem(at: copy) }
+                placement.undo()
                 throw error
             }
         }
@@ -71,7 +89,8 @@ extension DropStore {
                           arguments: [filename]) ?? false
     }
 
-    private func place(_ request: AddRequest, db: Database) throws -> Placement {
+    /// Validates the source and makes any copy. Needs no lock.
+    private func stage(_ request: AddRequest, stagingDirectory: inout URL?) throws -> Staged {
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
 
@@ -83,30 +102,15 @@ extension DropStore {
             let name = try Validation.dropName(rawName)
             guard !data.isEmpty else { throw AgentDropError.invalid("stdin was empty; nothing to drop") }
             guard !request.move else { throw AgentDropError.invalid("--move can't be used with stdin") }
-            let staging = try stagingDirectory()
-            defer { try? fm.removeItem(at: staging) }
+            let staging = try self.stagingDirectory()
+            stagingDirectory = staging
             let staged = staging.appendingPathComponent("content")
             try data.write(to: staged, options: .withoutOverwriting)
-            let final = try claimName(name, isFolder: false, db: db) { try fm.moveItem(at: staged, to: $0) }
-            return Placement(filename: final, isFolder: false, cleanupOnFailure: folder.appendingPathComponent(final))
+            return .copy(staged, isFolder: false, name: name)
 
         case .path(let rawSource):
             let source = rawSource.standardizedFileURL
-            let attributes: [FileAttributeKey: Any]
-            do {
-                attributes = try fm.attributesOfItem(atPath: source.path) // does not follow symlinks
-            } catch {
-                throw AgentDropError.notFound("No such file or directory: \(source.path)")
-            }
-            let isFolder: Bool
-            switch attributes[.type] as? FileAttributeType {
-            case .typeRegular?: isFolder = false
-            case .typeDirectory?: isFolder = true
-            case .typeSymbolicLink?:
-                throw AgentDropError.invalid("\(source.path) is a symlink; symlinks can't be dropped")
-            default:
-                throw AgentDropError.invalid("\(source.path) is not a regular file or directory")
-            }
+            let isFolder = try entryKind(source)
 
             let root = folder.resolvingSymlinksInPath().path
             let resolvedSource = source.resolvingSymlinksInPath().path
@@ -116,43 +120,76 @@ extension DropStore {
             let parent = source.deletingLastPathComponent().resolvingSymlinksInPath().path
 
             if parent == root {
-                // Already a top-level entry: register in place (optionally renaming).
-                let current = try canonicalEntryName(for: source)
-                if try isRegistered(filename: current, db: db) {
-                    throw AgentDropError.conflict("\(current) is already registered")
-                }
-                guard let requested = request.name, requested != current else {
-                    return Placement(filename: try Validation.dropName(current), isFolder: isFolder,
-                                     cleanupOnFailure: nil)
-                }
-                let name = try Validation.dropName(requested)
-                let destination = folder.appendingPathComponent(name)
-                let taken = try isRegistered(filename: name, db: db)
-                if taken || fm.fileExists(atPath: destination.path) {
-                    throw AgentDropError.conflict("\(name) already exists in the drop folder")
-                }
-                try fm.moveItem(at: source, to: destination)
-                return Placement(filename: name, isFolder: isFolder, cleanupOnFailure: nil)
+                return .inPlace(source, isFolder: isFolder, rename: request.name)
             }
-
             if parent.hasPrefix(root + "/") {
                 throw AgentDropError.invalid(
                     "\(source.path) is inside a subfolder of the drop folder; only top-level entries can be drops")
             }
 
             let name = try Validation.dropName(request.name ?? source.lastPathComponent)
-            let final: String
-            if request.move {
-                final = try claimName(name, isFolder: isFolder, db: db) { try fm.moveItem(at: source, to: $0) }
-            } else {
-                let staging = try stagingDirectory()
-                defer { try? fm.removeItem(at: staging) }
-                let staged = staging.appendingPathComponent("content", isDirectory: isFolder)
-                try fm.copyItem(at: source, to: staged)
-                final = try claimName(name, isFolder: isFolder, db: db) { try fm.moveItem(at: staged, to: $0) }
+            if request.move { return .move(source, isFolder: isFolder, name: name) }
+            let staging = try self.stagingDirectory()
+            stagingDirectory = staging
+            let staged = staging.appendingPathComponent("content", isDirectory: isFolder)
+            try fm.copyItem(at: source, to: staged)
+            return .copy(staged, isFolder: isFolder, name: name)
+        }
+    }
+
+    /// `false` for a regular file, `true` for a directory; anything else can't be dropped.
+    private func entryKind(_ source: URL) throws -> Bool {
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: source.path) // does not follow symlinks
+        } catch {
+            throw AgentDropError.notFound("No such file or directory: \(source.path)")
+        }
+        switch attributes[.type] as? FileAttributeType {
+        case .typeRegular?: return false
+        case .typeDirectory?: return true
+        case .typeSymbolicLink?:
+            throw AgentDropError.invalid("\(source.path) is a symlink; symlinks can't be dropped")
+        default:
+            throw AgentDropError.invalid("\(source.path) is not a regular file or directory")
+        }
+    }
+
+    /// Puts the staged entry at its final top-level name. Runs inside the write lock.
+    private func place(_ staged: Staged, db: Database) throws -> Placement {
+        let fm = FileManager.default
+        switch staged {
+        case .copy(let content, let isFolder, let name):
+            let final = try claimName(name, isFolder: isFolder, db: db) { try fm.moveItem(at: content, to: $0) }
+            let placed = folder.appendingPathComponent(final)
+            return Placement(filename: final, isFolder: isFolder, undo: { try? fm.removeItem(at: placed) })
+
+        case .move(let source, let isFolder, let name):
+            let final = try claimName(name, isFolder: isFolder, db: db) { try fm.moveItem(at: source, to: $0) }
+            let placed = folder.appendingPathComponent(final)
+            return Placement(filename: final, isFolder: isFolder, undo: { try? fm.moveItem(at: placed, to: source) })
+
+        case .inPlace(let source, let isFolder, let rename):
+            // Re-checked under the lock: the entry may have changed since staging.
+            guard try entryKind(source) == isFolder else {
+                throw AgentDropError.invalid("\(source.path) changed while it was being added; retry")
             }
-            return Placement(filename: final, isFolder: isFolder,
-                             cleanupOnFailure: request.move ? nil : folder.appendingPathComponent(final))
+            let current = try canonicalEntryName(for: source)
+            if try isRegistered(filename: current, db: db) {
+                throw AgentDropError.conflict("\(current) is already registered")
+            }
+            guard let requested = rename, requested != current else {
+                return Placement(filename: try Validation.dropName(current), isFolder: isFolder, undo: {})
+            }
+            let name = try Validation.dropName(requested)
+            let destination = folder.appendingPathComponent(name)
+            let taken = try isRegistered(filename: name, db: db)
+            if taken || fm.fileExists(atPath: destination.path) {
+                throw AgentDropError.conflict("\(name) already exists in the drop folder")
+            }
+            try fm.moveItem(at: source, to: destination)
+            let final = try canonicalEntryName(for: destination)
+            return Placement(filename: final, isFolder: isFolder, undo: { try? fm.moveItem(at: destination, to: source) })
         }
     }
 
@@ -162,8 +199,10 @@ extension DropStore {
         return url
     }
 
-    /// Preserve the actual directory-entry spelling when the filesystem accepts an
-    /// alias (case or Unicode normalization). Distinct hard-linked entries stay distinct.
+    /// The entry's spelling as stored on disk, which can differ from the requested name
+    /// when the filesystem accepts an alias (case or Unicode normalization). Records store
+    /// this spelling, so `entryIsPresent` can match it exactly. Distinct hard-linked entries
+    /// stay distinct.
     private func canonicalEntryName(for source: URL) throws -> String {
         let fm = FileManager.default
         let names = try fm.contentsOfDirectory(atPath: folder.path)
@@ -190,7 +229,7 @@ extension DropStore {
             if try isRegistered(filename: candidate, db: db) { continue }
             do {
                 try write(destination)
-                return candidate
+                return try canonicalEntryName(for: destination)
             } catch let error as CocoaError where error.code == .fileWriteFileExists {
                 continue
             }

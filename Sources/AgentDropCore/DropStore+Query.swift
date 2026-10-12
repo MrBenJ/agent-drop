@@ -54,11 +54,14 @@ extension DropStore {
         }
     }
 
-    /// A symlink or a replacement of the wrong kind is not the registered entry.
+    /// A symlink, a replacement of the wrong kind, or an entry that only matches through a
+    /// case/Unicode alias (e.g. `plan.md` for a missing `Plan.md`) is not the registered entry.
     func entryIsPresent(_ drop: Drop) -> Bool {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: path(of: drop).path)
-        let type = attributes?[.type] as? FileAttributeType
-        return type == (drop.isFolder ? .typeDirectory : .typeRegular)
+        let fm = FileManager.default
+        let attributes = try? fm.attributesOfItem(atPath: path(of: drop).path)
+        guard attributes?[.type] as? FileAttributeType == (drop.isFolder ? .typeDirectory : .typeRegular),
+              let names = try? fm.contentsOfDirectory(atPath: folder.path) else { return false }
+        return names.contains { $0.utf8.elementsEqual(drop.filename.utf8) }
     }
 
     /// Newest first (spec §4 `drop list`).
