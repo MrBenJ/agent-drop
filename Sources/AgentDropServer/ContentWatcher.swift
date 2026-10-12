@@ -109,10 +109,14 @@ public actor ContentWatcher {
         return try store.list(filter)
     }
 
-    /// A folder drop can be a large tree; walk it on a GCD thread, not the shared pool.
+    /// A private serial queue: unlike `DispatchQueue.global()`, whose threads are capped at
+    /// about one per core and can all be blocked by other work, it always gets a thread.
+    private static let fingerprintQueue = DispatchQueue(label: "AgentDrop.ContentWatcher.fingerprint")
+
+    /// A folder drop can be a large tree; walk it off the shared concurrency pool.
     static func fingerprintOffPool(of url: URL, isFolder: Bool) async -> Int? {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global().async { // default QoS: .utility can starve for seconds under load
+            fingerprintQueue.async {
                 continuation.resume(returning: fingerprint(of: url, isFolder: isFolder))
             }
         }

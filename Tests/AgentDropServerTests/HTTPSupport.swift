@@ -27,11 +27,15 @@ func randomPortBase() -> Int { Int.random(in: 20_000...59_000) }
 /// would starve the server under test on small CI machines.
 func rawHTTP(port: Int, _ request: String) async throws -> String {
     try await withCheckedThrowingContinuation { continuation in
-        DispatchQueue.global().async {
+        rawHTTPQueue.async {
             continuation.resume(with: Result { try blockingRawHTTP(port: port, request) })
         }
     }
 }
+
+/// Its own concurrent queue: `DispatchQueue.global()` has about one thread per core, and
+/// other tests may be blocking all of them.
+private let rawHTTPQueue = DispatchQueue(label: "tests.rawHTTP", attributes: .concurrent)
 
 private func blockingRawHTTP(port: Int, _ request: String) throws -> String {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
