@@ -61,8 +61,8 @@ Dependencies: [GRDB.swift](https://github.com/groue/GRDB.swift) (SQLite),
 **Minimum macOS:** 14 (Sonoma). Needed for `MenuBarExtra`, `SMAppService`, and the
 Observation framework.
 
-**Every CLI command except `drop watch` and `drop open` works without the app running.** Both write
-directly to the same store. The app watches the folder and store for changes and
+**Every CLI command except `drop watch` and `drop open` works without the app running.** The CLI and
+the app both write directly to the same store. The app watches the folder and store for changes and
 refreshes. Agents can hand off to each other with the app closed.
 
 **The app also runs a local server (§5)** that publishes read endpoints and a live
@@ -80,6 +80,18 @@ access prompt) plus the launch-at-login question (§6). Finishing it writes
 watcher runs (§5.2), so `drop watch` always exits 1 (there is no server to connect to;
 §4 Watching). Other CLI commands work
 before setup; they run under the terminal's own file access.
+
+**Before setup is complete, the app does not touch the drop folder at all:** no
+reconciliation, no folder creation, no FSEvents watching, no rendering, no server. It
+reads only `config.json` (Application Support, no permission needed).
+- Any launch before setup (Dock, login item, `drop open`, `agentdrop://` link) shows the
+  setup window first.
+- Setup shows the folder actually configured (which the CLI may have changed). If it is
+  in a protected location, setup explains the macOS prompt and only then touches the
+  folder; for an unprotected folder (e.g. the default `~/AgentDrop`) there is no prompt
+  to explain.
+- A `drop open <id>` received before setup is remembered; when setup completes, the app
+  navigates to that drop.
 
 ## 3. Storage
 
@@ -141,7 +153,7 @@ before setup; they run under the terminal's own file access.
 
 ### 3.2 Folder reconciliation
 
-The app watches the folder with FSEvents (and reconciles on launch):
+After setup is complete (§2), the app watches the folder with FSEvents (and reconciles on launch):
 
 - **Top-level file or directory with no record** → shown as *unregistered*, with a one-click "Register" that
   opens a small form (title, description, from, project, tags, kind). An agent can also
@@ -163,11 +175,14 @@ The CLI performs the same missing-file check lazily when it resolves an id.
   machine-readable output on stdout.
 - Exit codes: `0` ok · `1` error (including bad input, ambiguous id, wrong kind) ·
   `2` not found · `3` conflict (e.g. handoff already claimed).
-- Human-readable output is the default; errors go to stderr.
+- Human-readable output is the default. In human-readable mode errors go to stderr; with
+  `--json`, errors are printed to stdout as JSON (shape below) and nothing goes to
+  stderr.
 
 ### Terms
 
-- **Inbox** always means *open handoffs*, in the CLI (`drop inbox`) and the app alike.
+- **Inbox** always means handoffs with status `open` that are **not archived and not
+  missing**, in the CLI (`drop inbox`), the server, and the app alike.
 - **All Drops** is the app's view of every non-archived drop.
 - **Unread** = `read_at IS NULL` **and** not archived **and** not missing. One
   definition in `AgentDropCore`, used by `drop list --unread` (even with `--all`), the
@@ -223,7 +238,7 @@ passes `workspace/tab`, or `workspace/space/tab` for sub-workspaces, e.g.
 
 | Command | Behavior |
 |---|---|
-| `drop inbox [--project <p>]` | All open handoffs, optionally narrowed to one project. |
+| `drop inbox [--project <p>]` | The Inbox (§4 Terms: open, not archived, not missing), optionally narrowed to one project. |
 | `drop claim <id> --by <identity>` | See §4.2. |
 | `drop release <id>` | See §4.2. |
 | `drop done <id> [--note "…"]` | See §4.2. |
@@ -238,7 +253,8 @@ passes `workspace/tab`, or `workspace/space/tab` for sub-workspaces, e.g.
 
 `drop watch` first checks `setupComplete` in `config.json`; if it isn't `true`, it exits 1
 immediately: "Agent Drop hasn't been set up yet. Open the Agent Drop app once to finish
-setup." Otherwise it reads `server.json` (§5.2); if the app isn't running, it launches it **without
+setup." Otherwise it reads `server.json` (§5.2). If it says `no-port`, it exits 1 with that
+reason. If the app isn't running, it launches it **without
 opening its window** and waits up to 10 s for the server. Server unreachable after that
 → exit 1. Unknown id → exit 2.
 
@@ -331,21 +347,27 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 
 - Every mutation, from the CLI or the app, appends one row to an `event` table in the
   same SQLite transaction as the change:
-  `seq` (integer, autoincrement) · `type` · `drop_id` · `at` · `data` (JSON).
+  `seq` (integer, autoincrement) · `type` · `drop_id` · `at` · `data` (JSON) ·
+  `inbox_before` · `inbox_after` (bool) · `project_before` · `project_after`. The
+  before/after columns let the server filter Inbox arrivals exactly, live and on
+  `Last-Event-ID` replay alike (§5.3).
 - `content` events are written by `AgentDropServer`'s folder watcher (running in the app) when FSEvents reports a change to a drop's
   file (or anything inside a folder drop), debounced per drop (300 ms of quiet). Content
   changes made while the app isn't running produce no event.
 - **Retention (disclosed, configurable).** `eventRetentionDays` in `config.json`:
-  a number of days (default `30`) or `"forever"`. When it is a number, every mutation's
-  transaction also deletes event rows older than that (`DELETE FROM event WHERE at < …`,
+  a number of days (default `30`) or `"forever"`. When it is a number, every transaction
+  that appends an event row (mutations **and** `content` events) also deletes event rows
+  older than that (`DELETE FROM event WHERE at < …`,
   indexed on `at`). No timer runs. Because cleanup rides on writes, events are kept for
   **at least** the retention period; with no writes, older rows can remain until the
-  next one. `"forever"` disables cleanup and the log grows without limit.
+  next one. `"forever"` disables cleanup and the log grows without limit. An invalid
+  value in `config.json` (not a whole number ≥ 1 or `"forever"`) is treated as `30`, and
+  both the app (banner) and `drop config show` (warning) say so.
 - **Cleanup only ever deletes event-log rows.** Drops, their files, and their metadata
   are never deleted by it.
 - Disclosure: the app's Settings → Event history shows the current value, with presets
   (7 / 30 / 90 days / Forever) and a **Custom…** field accepting any whole number of
-  days, so any value set from the CLI is displayed as-is. It carries the note "Old entries in the change log are deleted as new changes come
+  days ≥ 1 (same rule as the CLI), so any value set from the CLI is displayed as-is. It carries the note "Old entries in the change log are deleted as new changes come
   in. Your drops and files are never deleted." `drop config show` prints it. The README
   documents it under "What Agent Drop stores and deletes".
 
@@ -377,8 +399,12 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 - Port: `47390` by default, configurable in `config.json`. If it is taken, the app tries
   the next 9 ports.
 - On start, the app writes `~/Library/Application Support/AgentDrop/server.json`
-  (permissions `0600`): `{ "port": …, "token": "…", "pid": … }`. A new random token is
-  generated each start. The file is removed on clean quit.
+  (permissions `0600`): `{ "status": "running", "port": …, "token": "…", "pid": … }`.
+  A new random token is generated each start. If no port could be bound, it writes
+  `{ "status": "no-port", "pid": … }` instead (updated if **Retry** succeeds). Before
+  setup is complete no `server.json` is written. The file is removed on clean quit.
+  `drop watch` treats a `server.json` whose `pid` is not a live process as "app not
+  running".
 - Every request requires `Authorization: Bearer <token>`. Requests whose `Host` header
   is not `127.0.0.1:<port>` or `localhost:<port>` are rejected. (A web page in the
   user's browser can reach localhost; the token and `Host` check stop it.)
@@ -392,11 +418,22 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 | `GET /drops/:id/content` | The file's bytes; for a folder drop, a JSON file listing. |
 | `GET /events` | Server-sent events for all drops. |
 | `GET /events?drop=:id` | Events for one drop. |
-| `GET /events?inbox[&project=:p]` | Events where a handoff **enters the Inbox**: `created` as a handoff, `metadata` changing kind to handoff, `status` to `open` (release, reopen). |
+| `GET /events?inbox[&project=:p]` | **Arrivals only:** any event after which the drop is in the Inbox (§4 Terms), scoped to project `p` if given, when it was not before — whatever caused it (created, kind change, release, reopen, un-archive, project change into `p`, …). Departures (e.g. claimed by someone else) are not delivered. |
 
-- Each SSE message: `id: <seq>`, `event: <type>`, `data: {"seq", "type", "dropId", "at", "data"}`.
-- Clients reconnect with `Last-Event-ID` and receive every event with a larger `seq`
-  that matches their filter, back to the retention limit (§5.1).
+- Each store has a random `storeId`, generated when the store is created and kept in
+  it. Each SSE message: `id: <storeId>:<seq>`, `event: <type>`,
+  `data: {"storeId", "seq", "type", "dropId", "at", "data"}`.
+- **Resume within one store:** clients reconnect with `Last-Event-ID` and receive every
+  event of that store with a larger `seq` that matches their filter, back to the
+  retention limit (§5.1).
+- **Folder switch = clean break:** switching the drop folder restarts the server (open
+  streams closed, new token, `server.json` rewritten). A client reconnecting with a
+  `Last-Event-ID` from a different `storeId` first receives one `reset` event
+  (`data: {"reason": "drop folder changed"}`), then live events from that point; no
+  history from the old store is replayed.
+- `drop watch <id>` reconnects automatically; if the id isn't in the new store it exits
+  2 ("drop folder changed; <id> is not in the current folder"). `drop watch --inbox`
+  prints the `reset` and continues on the new folder's Inbox.
 - Errors: `{"error": "<message>", "status": <HTTP status>}` with HTTP 400 / 401 / 403 / 404.
   (Distinct from the CLI's `code`, which is an exit code.)
 
@@ -500,7 +537,8 @@ Viewing a drop in the detail pane sets `read_at`.
   `seq` is strictly increasing; retention cleanup deletes only expired event rows (never
   drops) and is skipped with `"forever"`.
 - **`AgentDropServerTests`** (server started in-process against a temp store): token and `Host` checks, each
-  endpoint, SSE delivery for each event type, `Last-Event-ID` resume, content
+  endpoint, SSE delivery for each event type, `Last-Event-ID` resume, `reset` on a
+  `storeId` mismatch after a folder switch, content
   debouncing, inbox filtering. (`drop watch` end-to-end tests live in `dropCLITests`,
   against an in-process server.)
 - **App**: view models unit-tested against a temp store; UI verified manually against a
