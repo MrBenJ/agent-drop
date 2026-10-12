@@ -48,3 +48,40 @@ final class TempDir: @unchecked Sendable {
         return target
     }
 }
+
+struct Fixture {
+    let tmp: TempDir
+    let clock: TestClock
+    let store: DropStore
+    var folder: URL { store.folder }
+
+    init(retention: Retention = .default) throws {
+        let tmp = try TempDir()
+        let clock = TestClock()
+        let folder = tmp.url.appendingPathComponent("AgentDrop", isDirectory: true)
+        self.tmp = tmp
+        self.clock = clock
+        self.store = try DropStore.open(folder: folder, retention: retention, now: { clock.now })
+    }
+
+    /// A file outside the drop folder.
+    func outside(_ name: String, _ contents: String = "# Plan\n") throws -> URL {
+        try tmp.file("outside/\(name)", contents)
+    }
+
+    @discardableResult
+    func add(_ name: String = "plan.md", _ contents: String = "# Plan\n", from: String = "tester",
+             project: String? = nil, tags: [String] = [], handoff: Bool = false) throws -> Drop {
+        let source = try tmp.file("outside-\(UUID().uuidString)/\(name)", contents)
+        return try store.add(AddRequest(source: .path(source), project: project, tags: tags,
+                                        from: from, handoff: handoff))
+    }
+}
+
+final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Value
+    init(_ value: Value) { _value = value }
+    var value: Value { lock.withLock { _value } }
+    func withLock(_ body: (inout Value) -> Void) { lock.withLock { body(&_value) } }
+}
