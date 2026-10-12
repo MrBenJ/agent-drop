@@ -4,12 +4,31 @@ import Foundation
 /// reads them, plus removable and network volumes.
 public enum FolderProtection {
     public static func isProtected(_ folder: URL, homeDir: URL) -> Bool {
-        let path = folder.standardizedFileURL.path
-        let home = homeDir.standardizedFileURL.path
-        let protectedRoots = ["Desktop", "Documents", "Downloads", "Library/Mobile Documents"]
+        // Compare real paths, case-insensitively: `~/desktop` and a symlink to ~/Desktop
+        // reach the same protected folder on a default (case-insensitive) APFS volume.
+        let path = canonical(folder)
+        let home = canonical(homeDir)
+        let protectedRoots = ["desktop", "documents", "downloads", "library/mobile documents"]
             .map { home + "/" + $0 }
         if protectedRoots.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) { return true }
         return isOnRemovableOrNetworkVolume(folder.standardizedFileURL)
+    }
+
+    /// realpath(3) of the nearest existing ancestor plus the rest, lowercased.
+    static func canonical(_ url: URL) -> String {
+        var existing = url.standardizedFileURL
+        var rest: [String] = []
+        while !FileManager.default.fileExists(atPath: existing.path), existing.path != "/" {
+            rest.insert(existing.lastPathComponent, at: 0)
+            existing = existing.deletingLastPathComponent()
+        }
+        var base = existing.path
+        if let resolved = realpath(existing.path, nil) {
+            base = String(cString: resolved)
+            free(resolved)
+        }
+        let joined = ([base == "/" ? "" : base] + rest).joined(separator: "/")
+        return (joined.isEmpty ? "/" : joined).lowercased()
     }
 
     /// The folder may not exist yet, so ask about its nearest existing ancestor.

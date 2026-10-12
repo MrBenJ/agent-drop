@@ -39,3 +39,37 @@ extension DropStore {
         }
     }
 }
+
+extension DropStore {
+    /// Calls `handler` after every committed transaction on this store instance that wrote
+    /// event rows. The server uses it to deliver in-process writes immediately; writes from
+    /// other processes reach it through FSEvents on `.agentdrop/` instead.
+    public func observeEventCommits(_ handler: @escaping @Sendable () -> Void) {
+        pool.add(transactionObserver: EventCommitObserver(handler: handler), extent: .databaseLifetime)
+    }
+}
+
+private final class EventCommitObserver: TransactionObserver, @unchecked Sendable {
+    // Touched only on the store's writer queue, one transaction at a time.
+    private var wroteEvents = false
+    private let handler: @Sendable () -> Void
+
+    init(handler: @escaping @Sendable () -> Void) {
+        self.handler = handler
+    }
+
+    func observes(eventsOfKind eventKind: DatabaseEventKind) -> Bool {
+        if case .insert(let table) = eventKind { return table == "event" }
+        return false
+    }
+
+    func databaseDidChange(with event: DatabaseEvent) { wroteEvents = true }
+
+    func databaseDidCommit(_ db: Database) {
+        guard wroteEvents else { return }
+        wroteEvents = false
+        handler()
+    }
+
+    func databaseDidRollback(_ db: Database) { wroteEvents = false }
+}

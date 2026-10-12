@@ -60,6 +60,17 @@ struct ServerSupportTests {
         #expect(try f.store.events().map(\.type) == [.content])
     }
 
+    @Test func commitObserverFiresOncePerCommitThatWroteEvents() throws {
+        let f = try Fixture()
+        let count = Locked(0)
+        f.store.observeEventCommits { count.withLock { $0 += 1 } }
+        let drop = try f.add(handoff: true)
+        _ = try f.store.claim(drop.id, by: "a")
+        expectError(3) { _ = try f.store.claim(drop.id, by: "b") }  // rolled back: no event
+        _ = try f.store.edit(drop.id, EditRequest())                // no change: no event
+        #expect(count.value == 2)
+    }
+
     @Test func noContentEventForMissingOrUnknownDrop() throws {
         let f = try Fixture()
         let drop = try f.add()
@@ -84,6 +95,21 @@ struct FolderProtectionTests {
     @Test(arguments: ["AgentDrop", "DesktopStuff", "code/Desktop", "Library/Application Support/x"])
     func unprotectedLocations(_ relative: String) {
         #expect(!FolderProtection.isProtected(home.appendingPathComponent(relative), homeDir: home))
+    }
+
+    @Test(arguments: ["desktop/AgentDrop", "DESKTOP", "Documents/../Downloads/x", "./Desktop/y"])
+    func spellingVariantsAreStillProtected(_ relative: String) {
+        #expect(FolderProtection.isProtected(home.appendingPathComponent(relative), homeDir: home))
+    }
+
+    @Test func aSymlinkIntoAProtectedFolderIsProtected() throws {
+        let tmp = try TempDir()
+        let home = tmp.url.appendingPathComponent("home", isDirectory: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("Desktop"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: home.appendingPathComponent("dt"),
+                                                   withDestinationURL: home.appendingPathComponent("Desktop"))
+        #expect(FolderProtection.isProtected(home.appendingPathComponent("dt/AgentDrop"), homeDir: home))
+        #expect(!FolderProtection.isProtected(home.appendingPathComponent("AgentDrop"), homeDir: home))
     }
 
     @Test func tempFolderOnTheBootVolumeIsNotProtected() throws {
