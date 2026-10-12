@@ -293,20 +293,3 @@ struct HTTPPortTests {
         await first.stop()
     }
 }
-
-/// The first event of a stream, or nil if it ends or nothing arrives in time.
-func first(_ events: AsyncThrowingStream<SSEEvent, Error>, timeout: Duration = .seconds(5)) async throws -> SSEEvent? {
-    try await withThrowingTaskGroup(of: SSEEvent?.self) { group in
-        group.addTask {
-            for try await event in events { return event }
-            return nil
-        }
-        group.addTask {
-            try await Task.sleep(for: timeout)
-            return nil
-        }
-        let result = try await group.next()!
-        group.cancelAll()
-        return result
-    }
-}

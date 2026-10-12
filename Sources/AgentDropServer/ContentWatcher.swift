@@ -112,7 +112,7 @@ public actor ContentWatcher {
     /// A folder drop can be a large tree; walk it on a GCD thread, not the shared pool.
     static func fingerprintOffPool(of url: URL, isFolder: Bool) async -> Int? {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
+            DispatchQueue.global().async { // default QoS: .utility can starve for seconds under load
                 continuation.resume(returning: fingerprint(of: url, isFolder: isFolder))
             }
         }

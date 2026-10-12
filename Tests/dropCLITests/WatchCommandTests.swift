@@ -275,6 +275,28 @@ struct WatchCommandTests {
         _ = await watch.value
         await service.stop()
     }
+
+    /// Human lines never carry terminal control characters (titles come from file contents).
+    @Test func watchLinesAreSafe() async throws {
+        let env = try TestEnv()
+        try env.config.setSetupComplete(true)
+        var options = AgentDropService.Options()
+        options.portBase = Int.random(in: 20_000...59_000)
+        let service = AgentDropService(config: env.config, options: options)
+        try await service.start()
+        defer { Task { await service.stop() } }
+        let out = OutputSink()
+        let watch = Task { await env.runAsync(["watch", "--inbox", "--once"], out: out) }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while await service.clientCount == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(25)) }
+        try env.file("evil.md", "# \(TerminalSafetyTests.evil)\n")
+        #expect(env.run("add", "evil.md", "--from", "a", "--handoff").code == 0)
+        let r = await watch.value
+        #expect(r.code == 0)
+        #expect(!TerminalSafetyTests().hasControls(r.out))
+        #expect(r.out.split(separator: "\n").count == 1)
+        #expect(r.out.split(separator: "\t").count == 4)
+    }
 }
 
 final class Locked<Value>: @unchecked Sendable {

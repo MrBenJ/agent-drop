@@ -1,7 +1,6 @@
 import Foundation
 import Testing
 @testable import AgentDropCore
-@testable import AgentDropServer
 @testable import DropCLI
 
 /// Human-readable output must never pass terminal control sequences through: titles come
@@ -36,26 +35,5 @@ struct TerminalSafetyTests {
 
         let json = env.run("show", id, "--json")
         #expect((json.json["title"] as? String)?.contains("\u{1B}]0;pwned") == true)
-    }
-
-    @Test func watchLinesAreSafe() async throws {
-        let env = try TestEnv()
-        try env.config.setSetupComplete(true)
-        var options = AgentDropService.Options()
-        options.portBase = Int.random(in: 20_000...59_000)
-        let service = AgentDropService(config: env.config, options: options)
-        try await service.start()
-        defer { Task { await service.stop() } }
-        let out = OutputSink()
-        let watch = Task { await env.runAsync(["watch", "--inbox", "--once"], out: out) }
-        let deadline = ContinuousClock.now + .seconds(5)
-        while await service.clientCount == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(25)) }
-        try env.file("evil.md", "# \(Self.evil)\n")
-        #expect(env.run("add", "evil.md", "--from", "a", "--handoff").code == 0)
-        let r = await watch.value
-        #expect(r.code == 0)
-        #expect(!hasControls(r.out))
-        #expect(r.out.split(separator: "\n").count == 1)
-        #expect(r.out.split(separator: "\t").count == 4)
     }
 }

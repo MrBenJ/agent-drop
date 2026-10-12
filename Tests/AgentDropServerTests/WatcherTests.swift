@@ -3,16 +3,6 @@ import Testing
 @testable import AgentDropCore
 @testable import AgentDropServer
 
-/// Polls `condition` until it holds or `timeout` passes.
-func eventually(timeout: Duration = .seconds(5), _ condition: @Sendable () async throws -> Bool) async rethrows -> Bool {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-        if try await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(25))
-    }
-    return try await condition()
-}
-
 struct FolderWatcherTests {
     @Test func classifiesPaths() {
         let root = "/private/var/x/AgentDrop"
