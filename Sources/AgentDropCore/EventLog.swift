@@ -17,6 +17,19 @@ public struct StoredEvent: Equatable, Sendable {
     public let projectBefore: String?
     public let projectAfter: String?
 
+    init(seq: Int64, type: EventType, dropID: String, at: Date, data: String, inboxBefore: Bool,
+         inboxAfter: Bool, projectBefore: String?, projectAfter: String?) {
+        self.seq = seq
+        self.type = type
+        self.dropID = dropID
+        self.at = at
+        self.data = data
+        self.inboxBefore = inboxBefore
+        self.inboxAfter = inboxAfter
+        self.projectBefore = projectBefore
+        self.projectAfter = projectAfter
+    }
+
     init(row: Row) {
         seq = row["seq"]
         type = EventType(rawValue: row["type"])!
