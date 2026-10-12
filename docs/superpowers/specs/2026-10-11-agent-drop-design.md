@@ -481,13 +481,14 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
   writes. Commits through the hosting process's own store are noticed at once (the app
   writes through the service's store). Writes from other processes (the CLI) are noticed
   through FSEvents on `.agentdrop/`. A writer that keeps its connection open produces no
-  FSEvents until it closes, so the 15 s keepalive tick also checks for new rows. It is
-  the keepalive timer that already runs, not an extra poll.
+  FSEvents until it closes, so the 15 s keepalive tick also checks for new rows. That
+  timer runs only while at least one client is connected; with no clients the app has
+  no timers at all (§6), and a client that connects later catches up from the log.
 - **A fresh stream** (no `Last-Event-ID`) opens with an id-only frame, `id:
   <storeId>:<seq>` and no data, marking where live delivery starts. EventSource clients
   record it as their last event id without dispatching anything, so even a client that
   received no event yet resumes correctly, and gets `reset` after a folder switch.
-  Idle streams get an SSE comment (`: keepalive`) every 15 s.
+  While clients are connected, each gets an SSE comment (`: keepalive`) every 15 s.
 - Query parameters are checked strictly: an unknown parameter (a typo such as `projct`)
   is a 400, never a silently wider result. Flags (`handoffs`, `unread`, `all`, `inbox`)
   are true when present with no value or `true`. `project` on `/events` requires `inbox`.

@@ -31,6 +31,7 @@ public actor EventHub {
     private var lastSeq: Int64
     private var subscribers: [UUID: Subscriber] = [:]
     private var heartbeatTask: Task<Void, Never>?
+    private var heartbeatInterval: Duration?
     private var closed = false
 
     public init(store: DropStore) throws {
@@ -71,6 +72,7 @@ public actor EventHub {
         continuation.onTermination = { [weak self] _ in
             Task { await self?.remove(id) }
         }
+        updateHeartbeat()
         return stream
     }
 
@@ -89,9 +91,25 @@ public actor EventHub {
     /// Keeps idle connections alive and lets the server notice clients that went away.
     /// Each tick also pokes: the safety net for writers FSEvents can't see (a store
     /// connection that stays open only touches its WAL file, which reports nothing until
-    /// it closes). It's the keepalive timer that already runs, not an extra poll.
+    /// it closes). The timer runs only while at least one client is connected, so an idle
+    /// app has no timers at all (spec §6); a client connecting later catches up anyway.
     public func startHeartbeat(every interval: Duration) {
+        heartbeatInterval = interval
         heartbeatTask?.cancel()
+        heartbeatTask = nil
+        updateHeartbeat()
+    }
+
+    /// True while the keepalive timer runs. For tests.
+    var isTicking: Bool { heartbeatTask != nil }
+
+    private func updateHeartbeat() {
+        guard let interval = heartbeatInterval, !closed, !subscribers.isEmpty else {
+            heartbeatTask?.cancel()
+            heartbeatTask = nil
+            return
+        }
+        guard heartbeatTask == nil else { return }
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
@@ -118,5 +136,6 @@ public actor EventHub {
 
     private func remove(_ id: UUID) {
         subscribers[id] = nil
+        updateHeartbeat()
     }
 }

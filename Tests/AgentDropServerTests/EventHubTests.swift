@@ -131,6 +131,31 @@ struct EventHubTests {
         await hub.close()
     }
 
+    /// Spec §6: an idle app has no timers. The keepalive tick runs only while someone listens.
+    @Test func heartbeatTimerRunsOnlyWhileClientsAreConnected() async throws {
+        let f = try StoreFixture()
+        let hub = try EventHub(store: f.store)
+        await hub.startHeartbeat(every: .milliseconds(50))
+        #expect(await !hub.isTicking)
+
+        let first = Task { for await _ in try await hub.subscribe(.all, resumeFrom: nil) {} }
+        let second = Task { for await _ in try await hub.subscribe(.all, resumeFrom: nil) {} }
+        #expect(await eventually { await hub.subscriberCount == 2 })
+        #expect(await hub.isTicking)
+
+        first.cancel()
+        #expect(await eventually { await hub.subscriberCount == 1 })
+        #expect(await hub.isTicking)
+        second.cancel()
+        #expect(await eventually { await !hub.isTicking })
+
+        let again = Task { for await _ in try await hub.subscribe(.all, resumeFrom: nil) {} }
+        #expect(await eventually { await hub.isTicking })
+        again.cancel()
+        await hub.close()
+        #expect(await !hub.isTicking)
+    }
+
     @Test func closeEndsStreamsAndRefusesNewOnes() async throws {
         let f = try StoreFixture()
         let hub = try EventHub(store: f.store)
