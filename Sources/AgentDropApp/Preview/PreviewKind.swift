@@ -1,5 +1,22 @@
 import Foundation
 
+/// A classification remembered with the path it was made for. A view that re-classifies
+/// asynchronously must not render a newly selected file with the previous file's kind:
+/// that would read a huge file inline, or follow a link (spec §3).
+public struct ClassifiedPreview: Equatable, Sendable {
+    public var path: String
+    public var kind: PreviewKind
+
+    public init(path: String, kind: PreviewKind) {
+        self.path = path
+        self.kind = kind
+    }
+
+    public func kind(for path: String) -> PreviewKind? {
+        path == self.path ? kind : nil
+    }
+}
+
 /// Which preview a file gets (spec §6 Rendering).
 public enum PreviewKind: Equatable, Sendable {
     case markdown
@@ -13,12 +30,6 @@ public enum PreviewKind: Equatable, Sendable {
     case unavailable(String)
 
     static let markdownExtensions: Set<String> = ["md", "markdown", "mdown", "mkd"]
-    /// Shown as text even if the first bytes look odd. HTML is text here: never rendered.
-    static let textExtensions: Set<String> = [
-        "txt", "text", "log", "json", "jsonl", "yaml", "yml", "toml", "ini", "conf", "csv", "tsv", "xml", "html",
-        "htm", "css", "js", "mjs", "ts", "tsx", "jsx", "swift", "py", "rb", "go", "rs", "java", "kt", "c", "h", "m",
-        "mm", "cpp", "hpp", "sh", "zsh", "bash", "fish", "sql", "diff", "patch", "env", "gitignore",
-    ]
     /// Larger files go to Quick Look instead of being loaded into a view.
     static let maxInlineBytes: Int64 = 2_000_000
 
@@ -39,10 +50,10 @@ public enum PreviewKind: Equatable, Sendable {
         }
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         guard size <= maxInlineBytes else { return .quickLook }
-        let ext = url.pathExtension.lowercased()
-        if markdownExtensions.contains(ext) { return .markdown }
-        if textExtensions.contains(ext) { return .text }
-        return looksLikeText(url) ? .text : .quickLook
+        // Legacy-encoded text (e.g. a Windows-1252 CSV) would show as U+FFFD garbage:
+        // Quick Look detects encodings, so it gets those whatever their extension.
+        guard looksLikeText(url) else { return .quickLook }
+        return markdownExtensions.contains(url.pathExtension.lowercased()) ? .markdown : .text
     }
 
     /// No NUL bytes and valid UTF-8 in the first 8 KB (allowing a character cut off at the end).

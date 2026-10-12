@@ -27,6 +27,9 @@ public final class LibraryModel {
     /// Bumped by every reload that applied. Previews reload their file when it changes,
     /// since a content change doesn't change the drop's metadata.
     public private(set) var revision = 0
+    /// The event log's end when the current snapshot was read: every event up to it is
+    /// reflected in `drops`. Later events wait for the next reload.
+    @ObservationIgnored public private(set) var loadedSeq: Int64 = 0
 
     /// Drops the human registered in this window: they never trigger a "new drop" notification.
     @ObservationIgnored public internal(set) var registeredInApp: Set<String> = []
@@ -75,6 +78,7 @@ public final class LibraryModel {
             revision += 1
             drops = snapshot.drops
             unregistered = snapshot.unregistered
+            loadedSeq = snapshot.seq
             loadError = nil
             dropStaleSelection()
             await afterReload?(store)
@@ -85,6 +89,7 @@ public final class LibraryModel {
     }
 
     private struct Snapshot: Sendable {
+        var seq: Int64
         var drops: [Drop]
         var unregistered: [UnregisteredEntry]
 
@@ -92,7 +97,9 @@ public final class LibraryModel {
             var filter = ListFilter()
             filter.includeArchived = true
             filter.limit = nil
-            return Snapshot(drops: try store.list(filter), unregistered: try store.unregisteredEntries())
+            // The log's end first: whatever it covers is already in the list read after it.
+            let seq = try store.latestSeq()
+            return Snapshot(seq: seq, drops: try store.list(filter), unregistered: try store.unregisteredEntries())
         }
     }
 

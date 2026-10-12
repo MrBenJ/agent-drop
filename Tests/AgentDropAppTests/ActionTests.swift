@@ -159,6 +159,17 @@ struct FormTests {
         #expect(throws: AgentDropError.self) { try form.request(for: drop(status: nil)) }
     }
 
+    @Test func aTagTypedButNotYetAddedIsKept() throws {
+        var form = MetadataForm(drop(status: nil))
+        form.pendingTag = " urgent "
+        #expect(try form.request(for: drop(status: nil))?.addTags == ["urgent"])
+        var register = RegisterForm()
+        register.from = "ben"
+        register.pendingTag = "spec"
+        let entry = UnregisteredEntry(name: "a.md", isFolder: false, modifiedAt: nil)
+        #expect(try register.request(for: entry, in: URL(fileURLWithPath: "/tmp")).tags == ["spec"])
+    }
+
     @Test func tagListTrimsAndDeduplicatesExactly() {
         #expect(TagList.normalized([" PR", "pr", "PR", "", "  "]) == ["PR", "pr"])
     }

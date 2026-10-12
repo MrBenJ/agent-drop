@@ -19,6 +19,18 @@ struct RootView: View {
                 LibraryView(model: model)
             case .storeError(let message):
                 StoreErrorView(model: model, message: message)
+            case .configUnreadable(let message):
+                ContentUnavailableView {
+                    Label("Agent Drop can't read its settings", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("\(message)\nFix or remove the file; Agent Drop picks it up as soon as it changes.")
+                        .textSelection(.enabled)
+                } actions: {
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([model.configStore.configFile])
+                    }
+                    Button("Try Again") { Task { await model.configDidChange() } }
+                }
             }
         }
         .frame(minWidth: 760, minHeight: 460)

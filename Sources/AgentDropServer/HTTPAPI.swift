@@ -259,8 +259,7 @@ public struct FolderListing: Codable, Equatable, Sendable {
     public var id: String
     public var entries: [Entry]
 
-    /// Also used by the app's file tree.
-    public init(id: String, folder: URL) throws {
+    init(id: String, folder: URL) throws {
         self.id = id
         var entries: [Entry] = []
         try Self.walk(folder, prefix: "", into: &entries)

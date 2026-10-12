@@ -47,15 +47,19 @@ public final class NewDropNotifier {
     }
 
     private func checkOnce(_ store: DropStore, library: LibraryModel, enabled: Bool) async -> [NewDropNotice] {
+        // Only events the library's snapshot already reflects: a drop created after the
+        // snapshot was read isn't in `library` yet, and is announced after the next reload.
+        let upTo = library.loadedSeq
         guard self.store === store else {
             self.store = store
-            lastSeq = (try? await StoreQueue.run { try store.latestSeq() }) ?? 0
+            lastSeq = upTo
             return []
         }
         let after = lastSeq
-        guard let events = try? await StoreQueue.run({ try store.events(afterSeq: after) }),
-              let last = events.last else { return [] }
-        lastSeq = last.seq
+        guard upTo > after,
+              let events = try? await StoreQueue.run({ try store.events(afterSeq: after).filter { $0.seq <= upTo } })
+        else { return [] }
+        lastSeq = upTo
         guard enabled else { return [] }
         let drops = events.filter { $0.type == .created }
             .compactMap { library.drop($0.dropID) }

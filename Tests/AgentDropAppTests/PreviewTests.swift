@@ -61,6 +61,20 @@ struct PreviewKindTests {
         #expect(PreviewKind.of(try write("README", Data([0x63, 0x61, 0x66, 0xE9, 0x0A]))) == .quickLook)
     }
 
+    @Test func legacyEncodedTextWithAKnownExtensionGoesToQuickLook() throws {
+        let cafe = Data([0x63, 0x61, 0x66, 0xE9, 0x0A]) // Windows-1252, e.g. an Excel CSV
+        #expect(PreviewKind.of(try write("export.csv", cafe)) == .quickLook)
+        #expect(PreviewKind.of(try write("notes.txt", cafe)) == .quickLook)
+        #expect(PreviewKind.of(try write("old.md", cafe)) == .quickLook)
+    }
+
+    @Test func aClassificationOnlyAppliesToThePathItWasMadeFor() {
+        let classified = ClassifiedPreview(path: "bundle/README.md", kind: .markdown)
+        #expect(classified.kind(for: "bundle/README.md") == .markdown)
+        // The tree selection moved on: never render the new file with the old kind.
+        #expect(classified.kind(for: "bundle/video.mov") == nil)
+    }
+
     @Test func aLinkIsNeverFollowed() throws {
         _ = try write("real.md", Data("# x".utf8))
         let link = scratch.url.appendingPathComponent("link.md")
@@ -139,6 +153,30 @@ struct FolderTreeTests {
         #expect(nodes[1].type == "symlink" && nodes[1].target == "../shared/config.json" && nodes[1].children == nil)
         #expect(nodes[2].children?.first?.children?.first?.path == "docs/deep/x.txt")
         #expect(FolderTree.defaultDocument(nodes)?.path == "README.md")
+    }
+
+    @Test func anUnreadableEntryDoesNotBlankTheTree() throws {
+        let scratch = try Scratch()
+        let fm = FileManager.default
+        let folder = scratch.url.appendingPathComponent("bundle")
+        try fm.createDirectory(at: folder.appendingPathComponent("locked"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: folder.appendingPathComponent(".git/objects"), withIntermediateDirectories: true)
+        try Data("# R".utf8).write(to: folder.appendingPathComponent("README.md"))
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: folder.appendingPathComponent("locked").path)
+        try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: folder.appendingPathComponent(".git").path)
+        defer {
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.appendingPathComponent("locked").path)
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.appendingPathComponent(".git").path)
+        }
+        let nodes = try FolderTree.load(folder)
+        #expect(nodes.map(\.name) == ["README.md", "locked"])
+        #expect(nodes[1].children == [])
+    }
+
+    @Test func loadingOffTheMainThreadGivesTheSameTree() async throws {
+        let scratch = try Scratch()
+        try Data("# R".utf8).write(to: scratch.url.appendingPathComponent("README.md"))
+        #expect(await FolderTree.loadOffMain(scratch.url) == (try FolderTree.load(scratch.url)))
     }
 
     @Test func defaultDocumentFallsBackToTheFirstMarkdownFile() {

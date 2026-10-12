@@ -11,7 +11,11 @@ final class MainWindowController: NSWindowController {
                               backing: .buffered, defer: false)
         window.title = "Agent Drop"
         window.isReleasedWhenClosed = false
-        window.contentViewController = NSHostingController(rootView: RootView(model: model))
+        let hosting = NSHostingController(rootView: RootView(model: model))
+        // The list's search field and the window title come from SwiftUI's toolbar and
+        // navigationTitle; say explicitly that this hand-made window carries them.
+        hosting.sceneBridgingOptions = [.toolbars, .title]
+        window.contentViewController = hosting
         window.setContentSize(NSSize(width: 1100, height: 700))
         window.center()
         window.setFrameAutosaveName("AgentDropMainWindow")

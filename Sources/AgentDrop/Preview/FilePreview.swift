@@ -9,13 +9,15 @@ struct FilePreview: View {
     let relativePath: String
     /// The library's revision: a change re-reads the file (content events).
     let revision: Int
-    @State private var kind: PreviewKind?
+    /// Kept with the path it was made for: `body` runs with a new path before the task
+    /// re-classifies, and must never read that file with the old kind.
+    @State private var classified: ClassifiedPreview?
 
     private var url: URL { root.appendingPathComponent(relativePath) }
 
     var body: some View {
         Group {
-            switch kind {
+            switch classified?.kind(for: relativePath) {
             case nil:
                 Color.clear
             case .markdown?:
@@ -35,7 +37,9 @@ struct FilePreview: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: "\(relativePath)#\(revision)") { kind = PreviewKind.of(url) }
+        .task(id: "\(relativePath)#\(revision)") {
+            classified = ClassifiedPreview(path: relativePath, kind: PreviewKind.of(url))
+        }
     }
 }
 
@@ -109,7 +113,7 @@ struct FolderPreview: View {
             .frame(minHeight: 200)
         }
         .task(id: revision) {
-            nodes = (try? FolderTree.load(root.appendingPathComponent(folderName, isDirectory: true))) ?? []
+            nodes = await FolderTree.loadOffMain(root.appendingPathComponent(folderName, isDirectory: true))
             if selected == nil { selected = FolderTree.defaultDocument(nodes)?.path }
         }
     }

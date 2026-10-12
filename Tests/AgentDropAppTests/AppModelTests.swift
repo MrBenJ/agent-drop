@@ -347,12 +347,39 @@ struct AppModelLinkTests {
         try Data("{ half-written".utf8).write(to: f.config.configFile)
         await model.configDidChange()
         #expect(model.phase == .running && model.library.store != nil)
-        #expect(model.library.alert?.contains("config.json") == true)
+        // Visible without the window too: a banner and the menu's status line.
+        #expect(model.configError?.contains("config.json") == true)
+        #expect(model.banners.contains { if case .configError = $0 { true } else { false } })
+        #expect(model.menuStatus?.contains("config.json") == true)
 
-        model.library.alert = nil
         try good.write(to: f.config.configFile)
         await model.configDidChange()
-        #expect(model.phase == .running && model.library.alert == nil)
+        #expect(model.phase == .running && model.configError == nil && model.banners.isEmpty)
+        #expect(model.menuStatus == nil && model.library.alert == nil)
+        await f.stopAll()
+    }
+
+    @Test func aBrokenConfigAtLaunchIsAnErrorNotFirstRunSetup() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let good = try Data(contentsOf: f.config.configFile)
+        try Data("{ half-written".utf8).write(to: f.config.configFile)
+        let model = f.model()
+        await model.launch()
+        guard case .configUnreadable(let message) = model.phase else {
+            Issue.record("expected configUnreadable, got \(model.phase)")
+            await f.stopAll()
+            return
+        }
+        #expect(message.contains("config.json"))
+        #expect(!FileManager.default.fileExists(atPath: f.defaultFolder.path))
+        #expect(f.loginItem.calls.isEmpty)
+        await model.completeSetup() // not offered, and does nothing if called
+        #expect(f.loginItem.calls.isEmpty)
+
+        try good.write(to: f.config.configFile)
+        await model.configDidChange()
+        #expect(model.phase == .running && model.configError == nil)
         await f.stopAll()
     }
 

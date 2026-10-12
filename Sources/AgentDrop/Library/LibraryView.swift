@@ -38,6 +38,9 @@ struct BannerView: View {
                       systemImage: "network.slash") {
                 Button("Retry") { Task { await model.retryPort() } }
             }
+        case .configError(let message):
+            NoticeBar(text: "\(message) Agent Drop keeps using the last settings it could read.",
+                      systemImage: "exclamationmark.triangle")
         case .invalidRetention:
             NoticeBar(text: "config.json has an invalid eventRetentionDays value, so 30 days is used. Fix it in Settings → Event history.",
                       systemImage: "exclamationmark.triangle")

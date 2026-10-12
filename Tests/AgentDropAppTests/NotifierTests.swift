@@ -28,6 +28,20 @@ struct NotifierTests {
         #expect(await notifier.check(f.store, library: library, enabled: true).isEmpty) // once only
     }
 
+    @Test func aDropCreatedBetweenTheSnapshotAndTheCheckIsAnnouncedLater() async throws {
+        let f = try StoreFixture()
+        let library = LibraryModel()
+        await library.attach(f.store)
+        let notifier = NewDropNotifier()
+        _ = await notifier.check(f.store, library: library, enabled: true)
+        let first = try f.add("a.md", "# First\n")
+        await library.reload()
+        let late = try f.add("late.md", "# Late\n") // an agent writes after the snapshot was read
+        #expect(await notifier.check(f.store, library: library, enabled: true).map(\.dropID) == [first.id])
+        await library.reload()
+        #expect(await notifier.check(f.store, library: library, enabled: true).map(\.dropID) == [late.id])
+    }
+
     @Test func disabledStillAdvancesSoTurningItOnDoesntReplayOldDrops() async throws {
         let f = try StoreFixture()
         let library = LibraryModel()

@@ -8,6 +8,8 @@ public struct MetadataForm: Equatable, Sendable {
     public var description: String
     public var project: String
     public var tags: [String]
+    /// Text in the tag field that wasn't added yet.
+    public var pendingTag = ""
     public var kind: DropKind
 
     public init(_ drop: Drop) {
@@ -31,7 +33,7 @@ public struct MetadataForm: Equatable, Sendable {
         if title != drop.title { request.title = title }
         request.description = try Self.changed(description, from: drop.description, field: "description")
         request.project = try Self.changed(project, from: drop.project, field: "project")
-        let tags = TagList.normalized(self.tags)
+        let tags = TagList.normalized(self.tags + [pendingTag])
         request.addTags = tags.filter { !drop.tags.contains($0) }
         request.removeTags = drop.tags.filter { !tags.contains($0) }
         if kind != drop.kind {
@@ -67,6 +69,8 @@ public struct RegisterForm: Equatable, Sendable {
     public var from = ""
     public var project = ""
     public var tags: [String] = []
+    /// Text in the tag field that wasn't added yet.
+    public var pendingTag = ""
     public var handoff = false
 
     public init() {}
@@ -82,7 +86,7 @@ public struct RegisterForm: Equatable, Sendable {
         }
         return AddRequest(source: .path(folder.appendingPathComponent(entry.name, isDirectory: entry.isFolder)),
                           title: optional(title), description: optional(description), project: optional(project),
-                          tags: TagList.normalized(tags), from: from, handoff: handoff)
+                          tags: TagList.normalized(tags + [pendingTag]), from: from, handoff: handoff)
     }
 }
 

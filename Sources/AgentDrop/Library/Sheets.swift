@@ -27,7 +27,7 @@ struct EditMetadataSheet: View {
             TextField("Title", text: $form.title)
             TextField("Description", text: $form.description, axis: .vertical).lineLimit(3...6)
             TextField("Project", text: $form.project)
-            TagEditor(tags: $form.tags)
+            TagEditor(tags: $form.tags, pending: $form.pendingTag)
             Picker("Kind", selection: $form.kind) {
                 Text("Note").tag(DropKind.note)
                 Text("Handoff").tag(DropKind.handoff)
@@ -59,7 +59,7 @@ struct RegisterSheet: View {
             TextField("Description", text: $form.description, axis: .vertical).lineLimit(3...6)
             TextField("From", text: $form.from, prompt: Text("Required: who or what made this"))
             TextField("Project", text: $form.project)
-            TagEditor(tags: $form.tags)
+            TagEditor(tags: $form.tags, pending: $form.pendingTag)
             Toggle("Handoff (appears in the Inbox for an agent to claim)", isOn: $form.handoff)
         }
     }
@@ -126,7 +126,8 @@ struct SheetLayout<Content: View>: View {
 /// Tags as removable tokens plus a field to add one (tags may contain commas or spaces).
 struct TagEditor: View {
     @Binding var tags: [String]
-    @State private var newTag = ""
+    /// Lives in the form, so a tag typed but not added with Return is still saved.
+    @Binding var pending: String
 
     var body: some View {
         LabeledContent("Tags") {
@@ -143,10 +144,10 @@ struct TagEditor: View {
                         .help("Remove \(tag)")
                     }
                 }
-                TextField("Add a tag", text: $newTag)
+                TextField("Add a tag", text: $pending)
                     .onSubmit {
-                        tags = TagList.normalized(tags + [newTag])
-                        newTag = ""
+                        tags = TagList.normalized(tags + [pending])
+                        pending = ""
                     }
             }
         }

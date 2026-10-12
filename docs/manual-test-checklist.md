@@ -30,7 +30,7 @@ only forgets setup and settings).
 - [ ] Closing the window leaves the menu bar icon; the Dock icon reopens the window.
 - [ ] Sidebar: All Drops, Inbox (count), Handoffs (grouped open/claimed/done),
       Unregistered (count), Archived, Projects/Tags/From. A `--from a/b/c` value shows as a tree.
-- [ ] Search filters by title, description and filename.
+- [ ] The search field shows in the window's toolbar and filters by title, description and filename.
 - [ ] A Markdown drop renders with tables, task lists and code blocks; dark mode follows
       the system; a relative image next to it shows; an `https://` link opens the browser;
       a `<script>` in the file does nothing.

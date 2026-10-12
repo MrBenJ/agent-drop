@@ -18,6 +18,8 @@ public final class AppModel {
         case running
         /// The store couldn't be opened (spec §7). The message says why.
         case storeError(String)
+        /// config.json couldn't be read at launch, so whether setup happened is unknown.
+        case configUnreadable(String)
     }
 
     public enum Banner: Hashable, Identifiable, Sendable {
@@ -25,12 +27,16 @@ public final class AppModel {
         case noPort
         /// config.json holds an invalid retention value, treated as 30 (spec §5.1).
         case invalidRetention
+        /// config.json can't be read; the last good settings stay in effect.
+        case configError(String)
         public var id: Self { self }
     }
 
     public private(set) var phase: Phase = .starting
     public private(set) var config = AgentDropConfig()
     public private(set) var serverState: AgentDropService.State = .stopped
+    /// Why config.json can't be read right now; nil once it can.
+    public private(set) var configError: String?
     public let library: LibraryModel
     public let settings: AppSettings
     public let configStore: ConfigStore
@@ -91,6 +97,7 @@ public final class AppModel {
         var banners: [Banner] = []
         if serverState == .noPort { banners.append(.noPort) }
         if config.retentionWasInvalid { banners.append(.invalidRetention) }
+        if let configError, phase == .running { banners.append(.configError(configError)) }
         return banners
     }
 
@@ -100,7 +107,9 @@ public final class AppModel {
         case .setup: "Finish setting up Agent Drop…"
         case .confirmFolder: "Drop folder changed — confirm"
         case .storeError: "Can't open the drop store"
-        case .starting, .running: nil
+        case .configUnreadable: "Can't read config.json"
+        case .running: configError.map { _ in "Can't read config.json" }
+        case .starting: nil
         }
     }
 
@@ -111,12 +120,13 @@ public final class AppModel {
     public func launch() async {
         await serially { model in
             model.watchConfig()
-            model.loadConfig()
-            if model.config.setupComplete {
-                await model.applyFolder()
-            } else {
-                model.phase = .setup
+            // Unreadable at launch: whether setup ever happened is unknown, so this is an
+            // error to fix, not a first run (which would turn Launch at login back on).
+            guard model.loadConfig() else {
+                model.phase = .configUnreadable(model.configError ?? "Can't read config.json")
+                return
             }
+            await model.startFromConfig()
         }
     }
 
@@ -233,8 +243,14 @@ public final class AppModel {
     /// applies to the open store directly.
     public func configDidChange() async {
         await serially { model in
-            model.loadConfig()
-            guard model.phase != .setup, model.phase != .starting else { return }
+            let readable = model.loadConfig()
+            if case .configUnreadable = model.phase {
+                if readable { await model.startFromConfig() } else {
+                    model.phase = .configUnreadable(model.configError ?? "Can't read config.json")
+                }
+                return
+            }
+            guard readable, model.phase != .setup, model.phase != .starting else { return }
             model.library.store?.setRetention(model.config.eventRetentionDays)
             guard model.appliedKey() != model.applied else { return }
             await model.service.stop()
@@ -297,11 +313,26 @@ public final class AppModel {
                 port: config.serverPort)
     }
 
-    private func loadConfig() {
+    /// False (with `configError` set) when config.json can't be read; the last good
+    /// settings stay in effect. A successful read clears the error.
+    @discardableResult
+    private func loadConfig() -> Bool {
         do {
             config = try configStore.load()
+            configError = nil
+            return true
         } catch {
-            library.alert = LibraryModel.message(error)
+            configError = LibraryModel.message(error)
+            return false
+        }
+    }
+
+    /// What launch decides once config.json is readable.
+    private func startFromConfig() async {
+        if config.setupComplete {
+            await applyFolder()
+        } else {
+            phase = .setup
         }
     }
 

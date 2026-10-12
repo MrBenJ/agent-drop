@@ -1,4 +1,3 @@
-import AgentDropServer
 import Foundation
 
 /// One entry in a folder drop's file tree (spec §6 Rendering).
@@ -17,28 +16,46 @@ public struct FileNode: Identifiable, Hashable, Sendable {
 }
 
 public enum FolderTree {
-    /// The folder drop's contents as a tree, sorted by name. Dot-entries are hidden.
+    /// The folder drop's contents as a tree, sorted by name. Dot-entries (`.git`, …) are
+    /// skipped without being walked. An entry that vanishes or can't be read mid-walk is
+    /// left out (an unreadable directory shows empty) instead of failing the whole tree.
+    /// Throws only when the folder itself can't be listed. Links are never followed.
     public static func load(_ folder: URL) throws -> [FileNode] {
-        nodes(try FolderListing(id: "", folder: folder))
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        return walk(folder, names: names, prefix: "")
     }
 
-    static func nodes(_ listing: FolderListing) -> [FileNode] {
-        let visible = listing.entries.filter { entry in
-            !entry.path.split(separator: "/").contains { $0.hasPrefix(".") }
+    /// `load` on a private queue: a folder drop can be a large tree, and the window
+    /// re-reads it on every change.
+    public static func loadOffMain(_ folder: URL) async -> [FileNode] {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: (try? load(folder)) ?? []) }
         }
-        var byParent: [String: [FolderListing.Entry]] = [:]
-        for entry in visible {
-            let parent = entry.path.split(separator: "/").dropLast().joined(separator: "/")
-            byParent[parent, default: []].append(entry)
-        }
-        func build(_ parent: String) -> [FileNode] {
-            (byParent[parent] ?? []).map { entry in
-                FileNode(path: entry.path, name: String(entry.path.split(separator: "/").last ?? ""),
-                         type: entry.type, size: entry.size, target: entry.target,
-                         children: entry.type == "directory" ? build(entry.path) : nil)
+    }
+
+    private static let queue = DispatchQueue(label: "AgentDrop.app.folderTree")
+
+    private static func walk(_ directory: URL, names: [String], prefix: String) -> [FileNode] {
+        let fm = FileManager.default
+        return names.filter { !$0.hasPrefix(".") }.sorted().compactMap { name in
+            let url = directory.appendingPathComponent(name)
+            let path = prefix + name
+            guard let attributes = try? fm.attributesOfItem(atPath: url.path) else { return nil } // doesn't follow links
+            switch attributes[.type] as? FileAttributeType {
+            case .typeDirectory?:
+                let children = (try? fm.contentsOfDirectory(atPath: url.path)) ?? []
+                return FileNode(path: path, name: name, type: "directory", size: nil, target: nil,
+                                children: walk(url, names: children, prefix: path + "/"))
+            case .typeRegular?:
+                return FileNode(path: path, name: name, type: "file",
+                                size: (attributes[.size] as? NSNumber)?.int64Value, target: nil, children: nil)
+            case .typeSymbolicLink?:
+                return FileNode(path: path, name: name, type: "symlink", size: nil,
+                                target: try? fm.destinationOfSymbolicLink(atPath: url.path), children: nil)
+            default:
+                return FileNode(path: path, name: name, type: "other", size: nil, target: nil, children: nil)
             }
         }
-        return build("")
     }
 
     /// What a folder drop shows under its tree: `README.md`, else its first `.md`
