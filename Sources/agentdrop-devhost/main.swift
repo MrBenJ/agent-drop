@@ -28,44 +28,23 @@ guard unknown.isEmpty else {
 
 let config = ConfigStore.live()
 var temporarySetup: TemporarySetup?
-if arguments.contains("--temporary-setup") {
-    temporarySetup = try TemporarySetup.apply(to: config)
-}
-
 let service = AgentDropService(config: config)
-let state: AgentDropService.State
-do {
-    state = try await service.start()
-} catch let error as AgentDropError {
+
+@MainActor func fail(_ message: String) -> Never {
     temporarySetup?.restore()
-    FileHandle.standardError.write(Data("agentdrop-devhost: \(error.message)\n".utf8))
-    if error.message == ServiceMessages.setupIncomplete || error.message == ServiceMessages.confirmFolder {
-        FileHandle.standardError.write(Data("(pass --temporary-setup to run before the app exists)\n".utf8))
-    }
+    FileHandle.standardError.write(Data("agentdrop-devhost: \(message)\n".utf8))
     exit(1)
 }
 
-let folder = config.folderURL(try config.load()).path
-switch state {
-case .running(let port):
-    print("agentdrop-devhost: serving \(folder) on 127.0.0.1:\(port), pid \(getpid()). Ctrl-C to stop.")
-case .noPort:
-    print("agentdrop-devhost: watching \(folder), but no port was free (server.json says no-port). Ctrl-C to stop.")
-case .stopped:
-    exit(1)
-}
-if temporarySetup?.changedAnything == true {
-    print("agentdrop-devhost: setup is marked complete only while this runs.")
-}
-
-// Stop cleanly on Ctrl-C / kill: close streams, remove server.json, restore config.json.
-let signalQueue = DispatchQueue(label: "agentdrop-devhost.signals")
+// Installed before anything changes, so even an early Ctrl-C puts config.json back.
+// Handlers run on the main queue: top-level code is main-actor isolated in Swift 6, and
+// touching `service` / `temporarySetup` from another queue traps at runtime.
 var signalSources: [DispatchSourceSignal] = []
-for signalNumber in [SIGINT, SIGTERM] {
+for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
     signal(signalNumber, SIG_IGN)
-    let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: signalQueue)
+    let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
     source.setEventHandler {
-        Task {
+        Task { @MainActor in
             await service.stop()
             temporarySetup?.restore()
             print("\nagentdrop-devhost: stopped.")
@@ -74,6 +53,39 @@ for signalNumber in [SIGINT, SIGTERM] {
     }
     source.resume()
     signalSources.append(source)
+}
+
+if arguments.contains("--temporary-setup") {
+    do {
+        temporarySetup = try TemporarySetup.apply(to: config)
+    } catch {
+        fail("couldn't update config.json: \(error.localizedDescription)")
+    }
+}
+
+let state: AgentDropService.State
+do {
+    state = try await service.start()
+} catch let error as AgentDropError {
+    if error.message == ServiceMessages.setupIncomplete || error.message == ServiceMessages.confirmFolder {
+        fail("\(error.message)\n(pass --temporary-setup to run before the app exists)")
+    }
+    fail(error.message)
+} catch {
+    fail(error.localizedDescription)
+}
+
+let folder = config.folderURL((try? config.load()) ?? AgentDropConfig()).path
+switch state {
+case .running(let port):
+    print("agentdrop-devhost: serving \(folder) on 127.0.0.1:\(port), pid \(getpid()). Ctrl-C to stop.")
+case .noPort:
+    print("agentdrop-devhost: watching \(folder), but no port was free (server.json says no-port). Ctrl-C to stop.")
+case .stopped:
+    fail("the service didn't start")
+}
+if temporarySetup?.changedAnything == true {
+    print("agentdrop-devhost: setup is marked complete only while this runs.")
 }
 
 while true {

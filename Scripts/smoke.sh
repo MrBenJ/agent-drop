@@ -48,11 +48,19 @@ grep -q '"status":"running"' "$support/server.json"
 
 "$DROP" watch --inbox --project smoke2 --once --json > "$work/watch.out" &
 watcher=$!
-sleep 2
-printf '# Second\n' > "$work/second.md"
-id2=$("$DROP" add "$work/second.md" --from "ci/smoke" --project smoke2 --handoff)
+# The watcher may not be subscribed yet, so keep adding handoffs until it sees one and
+# exits (--once). Every handoff is an arrival; at most 20 tries.
+ids=()
+for n in $(seq 1 20); do
+  printf '# Second %s\n' "$n" > "$work/second-$n.md"
+  ids+=("$("$DROP" add "$work/second-$n.md" --from "ci/smoke" --project smoke2 --handoff)")
+  sleep 1
+  kill -0 "$watcher" 2>/dev/null || break
+done
+kill "$watcher" 2>/dev/null && { echo "drop watch never saw an arrival"; exit 1; }
 wait "$watcher"
-grep -q "\"dropId\":\"$id2\"" "$work/watch.out"
+seen=$(sed -n 's/.*"dropId":"\([a-z0-9]*\)".*/\1/p' "$work/watch.out")
+[[ " ${ids[*]} " == *" $seen "* ]]
 grep -q '"type":"created"' "$work/watch.out"
 
 kill -INT "$host"
