@@ -1450,11 +1450,15 @@ func randomPortBase() -> Int { Int.random(in: 20_000...59_000) }
 /// would starve the server under test on small CI machines.
 func rawHTTP(port: Int, _ request: String) async throws -> String {
     try await withCheckedThrowingContinuation { continuation in
-        DispatchQueue.global().async {
+        rawHTTPQueue.async {
             continuation.resume(with: Result { try blockingRawHTTP(port: port, request) })
         }
     }
 }
+
+/// Its own concurrent queue: `DispatchQueue.global()` has about one thread per core, and
+/// other tests may be blocking all of them.
+private let rawHTTPQueue = DispatchQueue(label: "tests.rawHTTP", attributes: .concurrent)
 
 private func blockingRawHTTP(port: Int, _ request: String) throws -> String {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -2468,9 +2472,8 @@ struct ContentWatcherTests: Sendable {
         try write("back again", to: url)
         await watcher.entryChanged("a.md")
         #expect(await eventually { (try? Self.types(f)) == [.created, .missing, .metadata] })
-        try await Task.sleep(for: .milliseconds(150))
+        #expect(await eventually { changes.value == 2 })
         #expect(try Self.types(f) == [.created, .missing, .metadata])
-        #expect(changes.value == 2)
 
         // The return re-baselined it, so the next edit is an ordinary content change.
         try write("edited after return", to: url)
@@ -2501,6 +2504,32 @@ struct ContentWatcherTests: Sendable {
         #expect(await eventually { (try? Self.types(f)) == [.created, .missing] })
         try await Task.sleep(for: .milliseconds(100))
         #expect(try Self.types(f) == [.created, .missing])
+    }
+
+    /// A change arriving while the same entry is still being settled is settled again
+    /// afterwards, never in parallel (the older result must not win).
+    @Test func overlappingSettlesForOneEntryRunInOrder() async throws {
+        let f = try StoreFixture()
+        let drop = try f.add("a.md", "1")
+        let url = f.store.path(of: drop)
+        let gate = Locked(true)
+        let watcherBox = Locked<ContentWatcher?>(nil)
+        let watcher = ContentWatcher(store: f.store, debounce: .milliseconds(5), onChange: {},
+                                     beforeFingerprint: {
+            // The first settle edits the file and reports another change while it's running.
+            var first = false
+            gate.withLock { first = $0; $0 = false }
+            guard first else { return }
+            try? Data("22".utf8).write(to: url)
+            await watcherBox.value?.entryChanged("a.md")
+            try? await Task.sleep(for: .milliseconds(50))
+        })
+        watcherBox.withLock { $0 = watcher }
+        await watcher.baselineNewDrops()
+        await watcher.entryChanged("a.md")
+        #expect(await eventually { (try? Self.types(f)) == [.created, .content] })
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(try Self.types(f) == [.created, .content])
     }
 
     @Test func stoppedWatcherIgnoresLateChanges() async throws {
@@ -2666,6 +2695,11 @@ public actor ContentWatcher {
     private var fingerprints: [String: Int] = [:]
     private var pending: [String: Task<Void, Never>] = [:]
     private var stopped = false
+    /// Entries being settled right now, and those that changed again meanwhile. Settles
+    /// suspend (fingerprinting), so two for one entry could otherwise overlap and the
+    /// older one could overwrite the newer fingerprint.
+    private var settling: Set<String> = []
+    private var settleAgain: Set<String> = []
     private let beforeFingerprint: @Sendable () async -> Void
 
     /// `onChange` runs after this watcher wrote one or more events. `beforeFingerprint` is
@@ -2718,6 +2752,17 @@ public actor ContentWatcher {
 
     private func settle(_ name: String) async {
         pending[name] = nil
+        guard !settling.contains(name) else {
+            settleAgain.insert(name)
+            return
+        }
+        settling.insert(name)
+        await settleExclusively(name)
+        settling.remove(name)
+        if settleAgain.remove(name) != nil { entryChanged(name) }
+    }
+
+    private func settleExclusively(_ name: String) async {
         guard !stopped, let drop = try? store.drop(filename: name) else { return }
         var wrote = false
         do {
@@ -2760,10 +2805,14 @@ public actor ContentWatcher {
         return try store.list(filter)
     }
 
-    /// A folder drop can be a large tree; walk it on a GCD thread, not the shared pool.
+    /// A private serial queue: unlike `DispatchQueue.global()`, whose threads are capped at
+    /// about one per core and can all be blocked by other work, it always gets a thread.
+    private static let fingerprintQueue = DispatchQueue(label: "AgentDrop.ContentWatcher.fingerprint")
+
+    /// A folder drop can be a large tree; walk it off the shared concurrency pool.
     static func fingerprintOffPool(of url: URL, isFolder: Bool) async -> Int? {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global().async { // default QoS: .utility can starve for seconds under load
+            fingerprintQueue.async {
                 continuation.resume(returning: fingerprint(of: url, isFolder: isFolder))
             }
         }
@@ -4889,5 +4938,19 @@ git commit -m "feat: agentdrop-devhost stand-in, real-binary watch smoke test, R
   3. `URL.resolvingSymlinksInPath()` strips `/private`, so the watcher uses `realpath(3)`.
   4. Blocking socket calls on Swift's concurrency threads starved the server on CI's 3-core runner.
   5. Human-readable output could carry terminal escape sequences from file headings.
+  6. `DispatchQueue.global()` has about one thread per core; when other work blocks them, queued work waits for seconds. The server's off-pool work uses private queues instead.
+  7. Two checks of the same entry could overlap and the older one could overwrite the newer fingerprint. They're now exclusive per entry.
+  8. A file could vanish between the presence check and the fingerprint, which used to look like a content change.
+  9. Hummingbird imports `ServiceContextModule` but gets it only transitively, so packages depending on this one (the Plan 3 app) failed to build until it's declared explicitly.
+  10. Top-level code is main-actor isolated in Swift 6, so the dev host's signal handlers must run on the main queue (a background queue trapped on Ctrl-C).
 
-  Each has a test.
+  Each has a test, or a CI check for the build and smoke items.
+- **Independent review (fresh reviewer, whole branch), all addressed:**
+  - **M1:** overlapping `start`/`stop`/`retryPort` leaked a server. They now run one at a time.
+  - **M2:** writes through a store connection that stays open never streamed. Fixed with commit observation for the service's own store plus a check on each keepalive tick.
+  - **M3:** a reconnecting `drop watch <id>` exited 2 instead of replaying `removed`. The server now accepts a removed id within the same store.
+  - **M4:** the `server.json` temp file was briefly 0644. It's now created 0600 with `O_EXCL`.
+  - **M5:** the protected-folder check missed case variants and symlinks. It now compares real paths, case-folded.
+  - **L1–L4:** the reconnect probe now uses a short timeout bounded by the deadline; reconnects back off and 401/503 retry; files are read with `O_NOFOLLOW`; a duplicate `Host` is rejected.
+  - **Also fixed:** a race in the smoke test, the dev host restoring config on every failure, and graceful shutdown (no error log on stop).
+  - **Not changed:** route handlers still make short synchronous SQLite calls (bounded by the 5 s busy timeout), and file bodies load into memory. Both are fine at v1's scale. Streaming large files is a Plan 3 candidate if the app previews big files through the server.
