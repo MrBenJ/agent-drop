@@ -5,8 +5,24 @@ drop folder with context: what each file is, why it exists, which project it's f
 and whether a handoff has been picked up.
 
 **Status:** v0.1: the `drop` CLI, the local server with `drop watch`, and AgentDrop.app
-(menu bar + main window). Build from source; the app is not notarized yet. See
+(menu bar + main window). Download a release or build from source; the app is not notarized yet. See
 [the design spec](docs/superpowers/specs/2026-10-11-agent-drop-design.md).
+
+## Install from a release
+
+Download the latest `AgentDrop-<version>.zip` from
+[Releases](https://github.com/MrBenJ/agent-drop/releases). It's universal (Apple
+silicon and Intel) and needs macOS 14+. Its `INSTALL.txt` has the steps:
+
+```bash
+cp -R AgentDrop.app /Applications/
+cp drop /usr/local/bin/drop          # or any directory on your PATH
+xattr -dr com.apple.quarantine /Applications/AgentDrop.app /usr/local/bin/drop
+open /Applications/AgentDrop.app
+```
+
+Releases are ad-hoc signed, not notarized. Clearing the quarantine flag once (or
+right-clicking the app in Finder → **Open**) lets macOS run them.
 
 ## Install (from source)
 
@@ -77,6 +93,15 @@ while the app is running.
   older than your retention setting (default 30 days). Change it in Settings → Event
   history or with `drop config set-retention <days|forever>`.
 - **Agent Drop never deletes your drops or files.**
+
+## Making a release
+
+1. Set the version in `App/Info.plist` (`CFBundleShortVersionString`) and
+   `Sources/DropCLI/DropCLI.swift` (`version:`).
+2. Write `docs/releases/v<version>.md`.
+3. Push a tag `v<version>`. The Release workflow tests, builds the universal zip with
+   `Scripts/package-release.sh` (which refuses a tag that doesn't match both versions),
+   and creates a **draft** release. Review it on GitHub and publish.
 
 ## License
 

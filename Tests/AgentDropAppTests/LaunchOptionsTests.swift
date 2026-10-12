@@ -26,5 +26,9 @@ struct LaunchOptionsTests {
         // (spec §4 Watching: once launched, it runs until the user quits it).
         #expect(plist["NSSupportsAutomaticTermination"] as? Bool == false)
         #expect(plist["NSSupportsSuddenTermination"] as? Bool == false)
+        // The icon build-app.sh copies into Contents/Resources.
+        #expect(plist["CFBundleIconFile"] as? String == "AppIcon")
+        let icon = plistURL.deletingLastPathComponent().appendingPathComponent("AppIcon.icns")
+        #expect(FileManager.default.fileExists(atPath: icon.path))
     }
 }

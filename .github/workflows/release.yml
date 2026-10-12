@@ -1,0 +1,30 @@
+name: Release
+# Pushing a tag like v0.1.0 builds the universal release zip and creates a DRAFT GitHub
+# release with it. A human reviews the draft and publishes it.
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release notes exist
+        run: test -f "docs/releases/${GITHUB_REF_NAME}.md" || { echo "Missing docs/releases/${GITHUB_REF_NAME}.md"; exit 1; }
+      - run: swift test
+      - name: Package (checks the tag against Info.plist and drop --version)
+        run: Scripts/package-release.sh "${GITHUB_REF_NAME#v}"
+      - name: Smoke-test the packaged drop (ephemeral runner only)
+        run: |
+          swift build -c release --product agentdrop-devhost
+          Scripts/smoke.sh ".build/release-artifacts/AgentDrop-${GITHUB_REF_NAME#v}/drop" .build/release/agentdrop-devhost
+      - name: Draft the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "Agent Drop $version" --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
+            ".build/release-artifacts/AgentDrop-$version.zip" ".build/release-artifacts/AgentDrop-$version.zip.sha256"
