@@ -22,7 +22,8 @@ public struct AgentDropClient: Sendable {
         return "/drops/" + (ref.addingPercentEncoding(withAllowedCharacters: allowed) ?? ref)
     }
 
-    public func request(_ path: String, query: [URLQueryItem] = [], lastEventID: String? = nil) -> URLRequest {
+    public func request(_ path: String, query: [URLQueryItem] = [], lastEventID: String? = nil,
+                        timeout: TimeInterval = 60) -> URLRequest {
         var components = URLComponents()
         components.scheme = "http"
         components.host = "127.0.0.1"
@@ -34,13 +35,13 @@ public struct AgentDropClient: Sendable {
         if let lastEventID { request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID") }
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         // An idle timeout, not a total one: heartbeats keep event streams under it.
-        request.timeoutInterval = 60
+        request.timeoutInterval = timeout
         return request
     }
 
     /// Body and HTTP status.
-    public func get(_ path: String, query: [URLQueryItem] = []) async throws -> (Data, Int) {
-        let (data, response) = try await URLSession.shared.data(for: request(path, query: query))
+    public func get(_ path: String, query: [URLQueryItem] = [], timeout: TimeInterval = 60) async throws -> (Data, Int) {
+        let (data, response) = try await URLSession.shared.data(for: request(path, query: query, timeout: timeout))
         return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
     }
 

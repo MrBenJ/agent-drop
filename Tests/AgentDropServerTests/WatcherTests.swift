@@ -174,6 +174,33 @@ struct ContentWatcherTests: Sendable {
         #expect(changes.value == 0)
     }
 
+    /// Found under CI-like load: the file vanished between the presence check and the
+    /// fingerprint. That must become `missing`, never a bogus `content` event.
+    @Test func entryVanishingMidCheckIsMissingNotContent() async throws {
+        let f = try StoreFixture()
+        let drop = try f.add("a.md", "1")
+        let url = f.store.path(of: drop)
+        let watcher = ContentWatcher(store: f.store, debounce: .milliseconds(10), onChange: {},
+                                     beforeFingerprint: { try? FileManager.default.removeItem(at: url) })
+        await watcher.baselineNewDrops()
+        await watcher.entryChanged("a.md")
+        #expect(await eventually { (try? Self.types(f)) == [.created, .missing] })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(try Self.types(f) == [.created, .missing])
+    }
+
+    @Test func stoppedWatcherIgnoresLateChanges() async throws {
+        let f = try StoreFixture()
+        let drop = try f.add("a.md", "1")
+        let (watcher, _) = make(f)
+        await watcher.baselineNewDrops()
+        try fm.removeItem(at: f.store.path(of: drop))
+        await watcher.stop()
+        await watcher.entryChanged("a.md")
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(try Self.types(f) == [.created])
+    }
+
     @Test func rescanChecksEveryDrop() async throws {
         let f = try StoreFixture()
         let a = try f.add("a.md", "1")

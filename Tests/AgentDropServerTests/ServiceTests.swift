@@ -35,6 +35,16 @@ struct ServiceFixture {
     }
 }
 
+/// True when nothing listens on the port any more.
+func isRefused(port: Int) async throws -> Bool {
+    do {
+        _ = try await AgentDropClient(port: port, token: "x").get("/drops", timeout: 2)
+        return false
+    } catch {
+        return true
+    }
+}
+
 func addFile(_ store: DropStore, _ name: String, _ text: String = "# T\n", in dir: URL,
              handoff: Bool = false, project: String? = nil) throws -> Drop {
     let source = dir.appendingPathComponent("src-\(UUID().uuidString)/\(name)")
@@ -187,6 +197,73 @@ struct ServiceRunTests {
         let frame = try #require(try await first(events))
         #expect(frame.event == "reset")
         #expect(frame.data == SSE.resetData)
+    }
+
+    /// Review M1: overlapping calls run one at a time; nothing is left running after stop.
+    @Test func overlappingStartsShareOneServerAndStopWins() async throws {
+        let f = try ServiceFixture()
+        let service = f.service()
+        async let a = service.start()
+        async let b = service.start()
+        let (first, second) = try await (a, b)
+        #expect(first == second)
+        guard case .running(let port) = first else { Issue.record("not running"); return }
+        await service.stop()
+        #expect(try await isRefused(port: port))
+
+        // Whichever of these reaches the service first, the result is consistent: the
+        // reported state, server.json and the listening port always agree.
+        for _ in 0..<5 {
+            let starting = Task { try await service.start() }
+            await service.stop()
+            let started = try await starting.value
+            guard case .running(let port2) = started else { Issue.record("not running"); return }
+            switch await service.state {
+            case .stopped:
+                #expect(f.infoFile.read() == nil)
+                #expect(try await isRefused(port: port2))
+            case .running(let port3):
+                #expect(f.infoFile.read()?.port == port3)
+                await service.stop()
+                #expect(try await isRefused(port: port3))
+            case .noPort:
+                Issue.record("unexpected no-port")
+            }
+        }
+    }
+
+    /// Review M2: the app writes through the service's own store, whose connection stays
+    /// open, so FSEvents never fires for it. Its commits must still stream at once.
+    @Test func writesThroughTheServicesOwnStoreStreamLive() async throws {
+        let f = try ServiceFixture()
+        let service = f.service()
+        _ = try await service.start()
+        defer { Task { await service.stop() } }
+        let store = try #require(await service.store)
+        let drop = try addFile(store, "h.md", in: f.dir.url, handoff: true)
+        _ = try store.claim(drop.id, by: "x")
+        let events = try await f.client().events(query: [URLQueryItem(name: "inbox", value: "")])
+        _ = try store.release(drop.id)
+        #expect(try await first(events, timeout: .seconds(2))?.event == "status")
+    }
+
+    /// Review M2: another long-lived writer is caught by the keepalive tick at the latest.
+    @Test func aLongLivedExternalWriterIsCaughtByTheKeepaliveTick() async throws {
+        let f = try ServiceFixture()
+        var options = AgentDropService.Options()
+        options.portBase = randomPortBase()
+        options.heartbeat = .milliseconds(300)
+        let service = AgentDropService(config: f.config, options: options)
+        _ = try await service.start()
+        defer { Task { await service.stop() } }
+        let external = try f.cliStore()      // stays open for the whole test
+        let drop = try addFile(external, "h.md", in: f.dir.url, handoff: true)
+        _ = try external.claim(drop.id, by: "x")
+        try await Task.sleep(for: .milliseconds(400))
+        let events = try await f.client().events(query: [URLQueryItem(name: "inbox", value: "")])
+        _ = try external.release(drop.id)
+        #expect(try await first(events, timeout: .seconds(3))?.event == "status")
+        withExtendedLifetime(external) {}
     }
 
     @Test func stopWithAConnectedClientIsPrompt() async throws {

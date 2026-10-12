@@ -26,6 +26,18 @@ struct ServerInfoTests {
         #expect(file.read() == nil)
     }
 
+    /// Review M4: the temp file must be private from the moment it exists, under any umask.
+    @Test func tempFileIsCreatedPrivate() throws {
+        let tmp = try ScratchDir()
+        let target = tmp.url.appendingPathComponent("t")
+        let old = umask(0)
+        defer { umask(old) }
+        try ServerInfoFile.writePrivately(Data("x".utf8), to: target)
+        let mode = try FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber
+        #expect(mode?.intValue == 0o600)
+        #expect(throws: (any Error).self) { try ServerInfoFile.writePrivately(Data("y".utf8), to: target) }
+    }
+
     @Test func unreadableFileReadsAsAbsent() throws {
         let tmp = try ScratchDir()
         let file = ServerInfoFile(configDir: tmp.url)

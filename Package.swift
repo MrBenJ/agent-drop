@@ -14,6 +14,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-service-context.git", from: "1.1.0"),
     ],
     targets: [
         .target(
@@ -27,6 +29,10 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdCore", package: "hummingbird"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
+                // Hummingbird imports ServiceContextModule but only gets it transitively;
+                // without this, packages that depend on AgentDropServer fail to build it.
+                .product(name: "ServiceContextModule", package: "swift-service-context"),
             ]
         ),
         .target(

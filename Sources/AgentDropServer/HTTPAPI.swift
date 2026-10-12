@@ -30,11 +30,10 @@ enum HTTPAPI {
             let url = store.path(of: drop)
             if drop.isFolder { return json(try FolderListing(id: drop.id, folder: url)) }
             return Response(status: .ok, headers: [.contentType: contentType(for: url)],
-                            body: .init(byteBuffer: ByteBuffer(bytes: try Data(contentsOf: url))))
+                            body: .init(byteBuffer: ByteBuffer(bytes: try readRegularFile(url, id: drop.id))))
         }
 
         router.get("/events") { request, _ -> Response in
-            let filter = try eventFilter(request, store: store)
             var cursor: EventCursor?
             if let raw = request.headers.first(where: { $0.name.canonicalName == "last-event-id" })?.value {
                 guard let parsed = EventCursor(lastEventID: raw) else {
@@ -42,6 +41,7 @@ enum HTTPAPI {
                 }
                 cursor = parsed
             }
+            let filter = try eventFilter(request, store: store, resumingWithin: cursor?.storeID == hub.storeID)
             let frames = try await hub.subscribe(filter, resumeFrom: cursor)
             return Response(
                 status: .ok,
@@ -98,7 +98,10 @@ enum HTTPAPI {
         return filter
     }
 
-    static func eventFilter(_ request: Request, store: DropStore) throws -> EventFilter {
+    /// `resumingWithin`: the client sent a cursor from this store. Then a well-formed id
+    /// with no record (removed while the client was away) is still accepted, so the
+    /// replay can deliver its `removed` event.
+    static func eventFilter(_ request: Request, store: DropStore, resumingWithin: Bool = false) throws -> EventFilter {
         let query = request.uri.queryParameters
         try rejectUnknown(query, allowed: ["drop", "inbox", "project"])
         let inbox = try flag(query, "inbox")
@@ -106,7 +109,12 @@ enum HTTPAPI {
         if let ref = query["drop"] {
             guard !inbox else { throw APIError(.badRequest, "use either drop or inbox, not both") }
             guard project == nil else { throw APIError(.badRequest, "project only applies to inbox") }
-            return .drop(try store.resolve(String(ref)).id)
+            do {
+                return .drop(try store.resolve(String(ref)).id)
+            } catch let error as AgentDropError where error.exitCode == 2 && resumingWithin
+                && DropID.isWellFormed(String(ref)) {
+                return .drop(String(ref))
+            }
         }
         if inbox { return .inbox(project: project) }
         guard project == nil else { throw APIError(.badRequest, "project only applies to inbox") }
@@ -136,6 +144,19 @@ enum HTTPAPI {
             throw APIError(.badRequest, "invalid drop reference")
         }
         return id
+    }
+
+    /// Reads a drop's file without following a link: the entry could be swapped for a
+    /// symlink after `resolve` checked it.
+    private static func readRegularFile(_ url: URL, id: String) throws -> Data {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else { throw AgentDropError.notFound("The file for \(id) is missing") }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else {
+            throw AgentDropError.notFound("The file for \(id) is missing")
+        }
+        return try handle.readToEnd() ?? Data()
     }
 
     // MARK: - Responses
@@ -213,7 +234,9 @@ struct AccessMiddleware: RouterMiddleware {
     func handle(_ request: Request, context: Context,
                 next: (Request, Context) async throws -> Response) async throws -> Response {
         let allowed = ["127.0.0.1:\(port)", "localhost:\(port)"]
-        guard let host = request.head.authority, allowed.contains(host.lowercased()) else {
+        // The first Host header becomes `authority`; any further one stays a header field.
+        let extraHost = request.headers.contains { $0.name.canonicalName == "host" }
+        guard let host = request.head.authority, allowed.contains(host.lowercased()), !extraHost else {
             throw APIError(.forbidden, "Host not allowed")
         }
         guard request.headers[.authorization] == "Bearer \(token)" else {

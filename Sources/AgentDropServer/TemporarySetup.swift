@@ -25,13 +25,19 @@ public struct TemporarySetup: Sendable {
         func remember(_ key: String) {
             originals[key] = dict[key].flatMap(encode).map(Original.value) ?? .absent
         }
-        if !settings.setupComplete {
-            remember("setupComplete")
-            try config.setSetupComplete(true)
-        }
-        if config.folderNeedsConfirmation(settings) {
-            remember("confirmedFolder")
-            try config.setConfirmedFolder(config.folderURL(settings))
+        do {
+            if !settings.setupComplete {
+                remember("setupComplete")
+                try config.setSetupComplete(true)
+            }
+            if config.folderNeedsConfirmation(settings) {
+                remember("confirmedFolder")
+                try config.setConfirmedFolder(config.folderURL(settings))
+            }
+        } catch {
+            // Undo whatever part already landed before reporting the failure.
+            TemporarySetup(config: config, fileExisted: fileExisted, originals: originals).restore()
+            throw error
         }
         return TemporarySetup(config: config, fileExisted: fileExisted, originals: originals)
     }

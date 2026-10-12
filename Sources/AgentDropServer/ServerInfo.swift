@@ -57,16 +57,26 @@ public struct ServerInfoFile: Sendable {
     public func write(_ info: ServerInfo) throws {
         let fm = FileManager.default
         let dir = url.deletingLastPathComponent()
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let temp = dir.appendingPathComponent(".server.json.\(UUID().uuidString)")
-        guard fm.createFile(atPath: temp.path, contents: try info.encoded(), attributes: [.posixPermissions: 0o600]) else {
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: temp.path])
-        }
+        try Self.writePrivately(try info.encoded(), to: temp)
         guard rename(temp.path, url.path) == 0 else {
             let code = errno
             try? fm.removeItem(at: temp)
             throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
         }
+    }
+
+    /// Creates `target` with mode 0600 from the first instant (O_CREAT|O_EXCL), so the
+    /// token is never readable by others, not even between create and chmod.
+    static func writePrivately(_ data: Data, to target: URL) throws {
+        let fd = open(target.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        fchmod(fd, 0o600) // exact mode even under an unusual umask
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
+        try handle.close()
     }
 
     public func remove() {

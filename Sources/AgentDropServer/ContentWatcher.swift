@@ -14,13 +14,18 @@ public actor ContentWatcher {
     private let onChange: @Sendable () async -> Void
     private var fingerprints: [String: Int] = [:]
     private var pending: [String: Task<Void, Never>] = [:]
+    private var stopped = false
+    private let beforeFingerprint: @Sendable () async -> Void
 
-    /// `onChange` runs after this watcher wrote one or more events.
+    /// `onChange` runs after this watcher wrote one or more events. `beforeFingerprint` is
+    /// a test hook.
     public init(store: DropStore, debounce: Duration = .milliseconds(300),
-                onChange: @escaping @Sendable () async -> Void) {
+                onChange: @escaping @Sendable () async -> Void,
+                beforeFingerprint: @escaping @Sendable () async -> Void = {}) {
         self.store = store
         self.debounce = debounce
         self.onChange = onChange
+        self.beforeFingerprint = beforeFingerprint
     }
 
     /// Records a baseline for every present drop that has none yet. Run at start and on
@@ -34,6 +39,7 @@ public actor ContentWatcher {
 
     /// Something changed in the top-level entry `name`. Settles after `debounce` of quiet.
     public func entryChanged(_ name: String) {
+        guard !stopped else { return }
         pending[name]?.cancel()
         pending[name] = Task { [debounce] in
             try? await Task.sleep(for: debounce)
@@ -51,15 +57,17 @@ public actor ContentWatcher {
     /// The recorded fingerprint, if any. For tests.
     func baseline(for id: String) -> Int? { fingerprints[id] }
 
-    /// Drops debounced work that hasn't settled yet (the service is stopping).
-    public func cancelPending() {
+    /// The service is stopping: drop unsettled work and ignore changes that still arrive
+    /// from FSEvents callbacks already in flight.
+    public func stop() {
+        stopped = true
         for task in pending.values { task.cancel() }
         pending.removeAll()
     }
 
     private func settle(_ name: String) async {
         pending[name] = nil
-        guard let drop = try? store.drop(filename: name) else { return }
+        guard !stopped, let drop = try? store.drop(filename: name) else { return }
         var wrote = false
         do {
             let checked = try store.checkPresence(drop.id)
@@ -67,7 +75,19 @@ public actor ContentWatcher {
             if checked.missing {
                 fingerprints[drop.id] = nil
             } else {
-                let current = Self.fingerprint(of: store.path(of: checked), isFolder: checked.isFolder)
+                await beforeFingerprint()
+                guard let current = await Self.fingerprintOffPool(of: store.path(of: checked),
+                                                                   isFolder: checked.isFolder) else {
+                    // The entry vanished (or changed kind) after the presence check: record
+                    // that instead, never a content change.
+                    guard !stopped else { return }
+                    let rechecked = try store.checkPresence(drop.id)
+                    if rechecked.missing { fingerprints[drop.id] = nil }
+                    wrote = wrote || rechecked.missing != checked.missing
+                    if wrote { await onChange() }
+                    return
+                }
+                guard !stopped else { return }
                 let previous = fingerprints.updateValue(current, forKey: drop.id)
                 // A return is reported by its `metadata {missing: false}` event; a first
                 // sighting only sets the baseline.
@@ -89,7 +109,19 @@ public actor ContentWatcher {
         return try store.list(filter)
     }
 
-    static func fingerprint(of url: URL, isFolder: Bool) -> Int {
+    /// A folder drop can be a large tree; walk it on a GCD thread, not the shared pool.
+    static func fingerprintOffPool(of url: URL, isFolder: Bool) async -> Int? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: fingerprint(of: url, isFolder: isFolder))
+            }
+        }
+    }
+
+    /// nil when the entry itself is absent or not the expected kind (links never count).
+    static func fingerprint(of url: URL, isFolder: Bool) -> Int? {
+        let type = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
+        guard type == (isFolder ? .typeDirectory : .typeRegular) else { return nil }
         var hasher = Hasher()
         if isFolder {
             walk(url, prefix: "", into: &hasher)

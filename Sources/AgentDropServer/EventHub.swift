@@ -87,6 +87,9 @@ public actor EventHub {
     }
 
     /// Keeps idle connections alive and lets the server notice clients that went away.
+    /// Each tick also pokes: the safety net for writers FSEvents can't see (a store
+    /// connection that stays open only touches its WAL file, which reports nothing until
+    /// it closes). It's the keepalive timer that already runs, not an extra poll.
     public func startHeartbeat(every interval: Duration) {
         heartbeatTask?.cancel()
         heartbeatTask = Task { [weak self] in
@@ -109,6 +112,7 @@ public actor EventHub {
     }
 
     private func broadcastHeartbeat() {
+        poke()
         for subscriber in subscribers.values { subscriber.continuation.yield(.heartbeat) }
     }
 

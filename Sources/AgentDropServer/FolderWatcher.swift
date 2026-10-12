@@ -26,22 +26,30 @@ public final class FolderWatcher: @unchecked Sendable {
         self.handler = handler
     }
 
-    deinit { stop() }
+    // No deinit cleanup: start() retains self until stop(), so a started watcher can't be
+    // deallocated. Call stop() when done.
 
     public func start() throws {
         try lock.withLock {
             guard stream == nil else { return }
-            var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+            // The stream holds a strong reference until stop(), so the watcher can never be
+            // deallocated (and run stop() from its own queue) while callbacks may arrive.
+            let retained = Unmanaged.passRetained(self)
+            var context = FSEventStreamContext(version: 0, info: retained.toOpaque(),
                                                retain: nil, release: nil, copyDescription: nil)
             let flags = FSEventStreamCreateFlags(
                 kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer)
             guard let created = FSEventStreamCreate(nil, Self.callback, &context, [root] as CFArray,
                                                     FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, flags)
-            else { throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: root]) }
+            else {
+                retained.release()
+                throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: root])
+            }
             FSEventStreamSetDispatchQueue(created, queue)
             guard FSEventStreamStart(created) else {
                 FSEventStreamInvalidate(created)
                 FSEventStreamRelease(created)
+                retained.release()
                 throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: root])
             }
             stream = created
@@ -59,6 +67,7 @@ public final class FolderWatcher: @unchecked Sendable {
         FSEventStreamInvalidate(stopping)
         queue.sync {} // drain a callback that's already running
         FSEventStreamRelease(stopping)
+        Unmanaged.passUnretained(self).release() // balances passRetained in start()
     }
 
     static func classify(path: String, root: String) -> Change? {

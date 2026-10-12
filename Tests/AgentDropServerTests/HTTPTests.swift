@@ -35,6 +35,28 @@ struct HTTPAccessTests {
         }
     }
 
+    /// Review L4: a second Host header must not slip through behind a valid first one.
+    @Test func duplicateHostHeaderIs403() async throws {
+        let s = try await ServerFixture()
+        defer { Task { await s.server.stop() } }
+        let response = try await rawHTTP(port: s.server.port,
+            "GET /drops HTTP/1.1\r\nHost: 127.0.0.1:\(s.server.port)\r\nHost: evil.example\r\nAuthorization: Bearer \(s.server.token)\r\nConnection: close\r\n\r\n")
+        #expect(response.hasPrefix("HTTP/1.1 403"))
+    }
+
+    @Test func checksCoverUnknownRoutesAndEvents() async throws {
+        let s = try await ServerFixture()
+        defer { Task { await s.server.stop() } }
+        let port = s.server.port
+        for path in ["/nope", "/events"] {
+            let noToken = try await rawHTTP(port: port, "GET \(path) HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nConnection: close\r\n\r\n")
+            #expect(noToken.hasPrefix("HTTP/1.1 401"), "\(path)")
+            let foreign = try await rawHTTP(port: port,
+                "GET \(path) HTTP/1.1\r\nHost: evil.example\r\nAuthorization: Bearer \(s.server.token)\r\nConnection: close\r\n\r\n")
+            #expect(foreign.hasPrefix("HTTP/1.1 403"), "\(path)")
+        }
+    }
+
     @Test func unknownRouteIsJSON404() async throws {
         let s = try await ServerFixture()
         defer { Task { await s.server.stop() } }
@@ -198,6 +220,32 @@ struct HTTPEventsTests {
         await s.hub.poke()
         #expect(try await first(byFilename)?.event == "metadata")
         #expect(try await first(inbox)?.event == "metadata")
+    }
+
+    /// Review M3: a client resuming within the same store can still follow a drop whose
+    /// record was removed while it was away, and receives the `removed` event.
+    @Test func removedDropCanBeResumedWithinTheSameStore() async throws {
+        let s = try await ServerFixture()
+        defer { Task { await s.server.stop() } }
+        let drop = try s.store.add("gone.md")
+        try FileManager.default.removeItem(at: s.store.store.path(of: drop))
+        _ = try s.store.store.checkPresence(drop.id)
+        try s.store.store.removeRecord(drop.id)
+        let query = [URLQueryItem(name: "drop", value: drop.id)]
+        let resumed = try await s.client.events(query: query, lastEventID: "\(s.store.store.storeID):1")
+        #expect(try await first(resumed)?.event == "missing")
+        do {
+            _ = try await s.client.events(query: query)
+            Issue.record("expected 404 without a cursor")
+        } catch let failure as AgentDropClient.HTTPFailure {
+            #expect(failure.status == 404)
+        }
+        do {
+            _ = try await s.client.events(query: query, lastEventID: "otherstore:1")
+            Issue.record("expected 404 for another store's cursor")
+        } catch let failure as AgentDropClient.HTTPFailure {
+            #expect(failure.status == 404)
+        }
     }
 
     @Test func badEventRequests() async throws {

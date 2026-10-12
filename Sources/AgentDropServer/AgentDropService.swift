@@ -34,12 +34,18 @@ public actor AgentDropService {
     public private(set) var state: State = .stopped
     private let config: ConfigStore
     private let options: Options
-    private var store: DropStore?
     private var hub: EventHub?
     private var content: ContentWatcher?
     private var watcher: FolderWatcher?
     private var server: HTTPServer?
     private var portBase = AgentDropConfig.defaultServerPort
+    /// The last queued operation. start/stop/retryPort run one at a time, in call order:
+    /// each suspends on its way, and an overlapping call must not see a half-started state.
+    private var lastOperation: Task<Void, Never>?
+
+    /// The running store. In-process writers (the app) should write through it: its
+    /// commits reach event-stream clients at once.
+    public private(set) var store: DropStore?
 
     public init(config: ConfigStore, options: Options = Options()) {
         self.config = config
@@ -57,6 +63,36 @@ public actor AgentDropService {
     /// confirmed. Otherwise starts the content watcher, then the server.
     @discardableResult
     public func start() async throws -> State {
+        try await serially { try await $0.performStart() }
+    }
+
+    /// The app's **Retry** button after `noPort`.
+    @discardableResult
+    public func retryPort() async -> State {
+        (try? await serially { service -> State in
+            guard await service.state == .noPort else { return await service.state }
+            return (try? await service.bindServer()) ?? .noPort
+        }) ?? state
+    }
+
+    /// Stops everything and removes `server.json` if this instance wrote it.
+    public func stop() async {
+        _ = try? await serially { await $0.performStop() }
+    }
+
+    private func serially<T: Sendable>(_ operation: @escaping @Sendable (AgentDropService) async throws -> T)
+        async throws -> T
+    {
+        let previous = lastOperation
+        let task = Task<T, Error> {
+            await previous?.value
+            return try await operation(self)
+        }
+        lastOperation = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
+    private func performStart() async throws -> State {
         guard state == .stopped else { return state }
         let settings = try config.load()
         guard settings.setupComplete else { throw AgentDropError.invalid(ServiceMessages.setupIncomplete) }
@@ -68,6 +104,7 @@ public actor AgentDropService {
         let folder = config.folderURL(settings)
         let store = try DropStore.open(folder: folder, retention: settings.eventRetentionDays)
         let hub = try EventHub(store: store)
+        store.observeEventCommits { Task { await hub.poke() } }
         await hub.startHeartbeat(every: options.heartbeat)
         let content = ContentWatcher(store: store, debounce: options.debounce, onChange: { await hub.poke() })
         await content.baselineNewDrops()
@@ -87,37 +124,25 @@ public actor AgentDropService {
                 }
             }
         }
-        do {
-            try watcher.start()
-        } catch {
-            await hub.close()
-            throw AgentDropError.invalid("Can't watch \(folder.path): \(error.localizedDescription)")
-        }
         self.store = store
         self.hub = hub
         self.content = content
         self.watcher = watcher
         do {
+            try watcher.start()
             return try await bindServer()
         } catch {
-            await stop()
-            throw error
+            await performStop()
+            if let error = error as? AgentDropError { throw error }
+            throw AgentDropError.invalid("Can't start serving \(folder.path): \(error.localizedDescription)")
         }
     }
 
-    /// The app's **Retry** button after `noPort`.
-    @discardableResult
-    public func retryPort() async -> State {
-        guard state == .noPort else { return state }
-        return (try? await bindServer()) ?? state
-    }
-
-    /// Stops everything and removes `server.json` if this instance wrote it.
-    public func stop() async {
+    private func performStop() async {
         await server?.stop()
         await hub?.close()
         watcher?.stop()
-        await content?.cancelPending()
+        await content?.stop()
         if infoFile.read()?.pid == options.pid { infoFile.remove() }
         server = nil
         hub = nil

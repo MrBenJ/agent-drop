@@ -469,12 +469,20 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
   `Last-Event-ID` from a different `storeId` first receives one `reset` event
   (`data: {"reason": "drop folder changed"}`), then live events from that point; no
   history from the old store is replayed.
+- With a `Last-Event-ID` from the current store, `GET /events?drop=<id>` also accepts the
+  id of a drop whose record was removed meanwhile, so the replay can deliver `removed`.
 - `drop watch <id>` reconnects automatically; if the id isn't in the new store it exits
   2 ("drop folder changed; <id> is not in the current folder"). `drop watch --inbox`
   prints the `reset` and continues on the new folder's Inbox.
 - Errors: `{"error": "<message>", "status": <HTTP status>}` with HTTP 400 / 401 / 403 / 404.
   (Distinct from the CLI's `code`, which is an exit code.) Two more can occur: 503 for
   "store busy, retry" (§7) and 500 for an unexpected failure.
+- **How new rows reach streams.** The server reads the event log; it isn't told about
+  writes. Commits through the hosting process's own store are noticed at once (the app
+  writes through the service's store). Writes from other processes (the CLI) are noticed
+  through FSEvents on `.agentdrop/`. A writer that keeps its connection open produces no
+  FSEvents until it closes, so the 15 s keepalive tick also checks for new rows. It is
+  the keepalive timer that already runs, not an extra poll.
 - **A fresh stream** (no `Last-Event-ID`) opens with an id-only frame, `id:
   <storeId>:<seq>` and no data, marking where live delivery starts. EventSource clients
   record it as their last event id without dispatching anything, so even a client that
