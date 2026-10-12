@@ -48,6 +48,15 @@ public actor ContentWatcher {
         for drop in drops { entryChanged(drop.filename) }
     }
 
+    /// The recorded fingerprint, if any. For tests.
+    func baseline(for id: String) -> Int? { fingerprints[id] }
+
+    /// Drops debounced work that hasn't settled yet (the service is stopping).
+    public func cancelPending() {
+        for task in pending.values { task.cancel() }
+        pending.removeAll()
+    }
+
     private func settle(_ name: String) async {
         pending[name] = nil
         guard let drop = try? store.drop(filename: name) else { return }

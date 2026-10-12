@@ -112,7 +112,7 @@ struct ContentWatcherTests: Sendable {
         let drop = try f.add("late.md", "1")
         let (watcher, _) = make(f)
         await watcher.entryChanged("late.md")      // no baseline yet: this one only records it
-        try await Task.sleep(for: .milliseconds(150))
+        #expect(await eventually { await watcher.baseline(for: drop.id) != nil })
         #expect(try Self.types(f) == [.created])
         try write("22", to: f.store.path(of: drop))
         await watcher.entryChanged("late.md")
