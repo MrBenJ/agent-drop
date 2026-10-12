@@ -60,7 +60,7 @@ Dependencies: [GRDB.swift](https://github.com/groue/GRDB.swift) (SQLite),
 **Minimum macOS:** 14 (Sonoma). Needed for `MenuBarExtra`, `SMAppService`, and the
 Observation framework.
 
-**Every CLI command except `drop watch` works without the app running.** Both write
+**Every CLI command except `drop watch` and `drop open` works without the app running.** Both write
 directly to the same store. The app watches the folder and store for changes and
 refreshes. Agents can hand off to each other with the app closed.
 
@@ -206,11 +206,11 @@ passes `workspace/tab`, or `workspace/space/tab` for sub-workspaces, e.g.
 
 | Command | Behavior |
 |---|---|
-| `drop list [filters]` | Newest first, default `--limit 50`, archived excluded. No filters are applied unless passed. Filters: `--project`, `--tag`, `--from`, `--from-under`, `--handoffs`, `--status open\|claimed\|done`, `--unread` (see Terms), `--limit <n>`, `--all` (include archived). |
+| `drop list [filters]` | Newest first. The only defaults are: archived drops excluded (use `--all`) and `--limit 50`; no other filter applies unless passed. `latest` and `GET /drops` share these defaults. Filters: `--project`, `--tag`, `--from`, `--from-under`, `--handoffs`, `--status open\|claimed\|done`, `--unread` (see Terms), `--limit <n>`, `--all` (include archived). |
 | `drop show <id>` | Metadata plus absolute path. |
 | `drop cat <id>` | File contents to stdout. Does **not** set `read_at` (that's for humans). |
 | `drop path <id>` | Absolute path only. |
-| `drop latest [filters] [--cat]` | Newest match from the same filters as `list`; prints like `show`, or contents with `--cat`. Exit 2 if none. |
+| `drop latest [filters] [--cat]` | Newest match from the same filters as `list`; prints like `show`, or raw contents with `--cat`. `--cat` with `--json` → exit 1 ("use one or the other"). Exit 2 if none. |
 
 **Handoffs**
 
@@ -377,7 +377,8 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 - Each SSE message: `id: <seq>`, `event: <type>`, `data: {"seq", "type", "dropId", "at", "data"}`.
 - Clients reconnect with `Last-Event-ID` and receive every event with a larger `seq`
   that matches their filter, back to the retention limit (§5.1).
-- Errors use the same JSON error shape as the CLI, with HTTP 400 / 401 / 403 / 404.
+- Errors: `{"error": "<message>", "status": <HTTP status>}` with HTTP 400 / 401 / 403 / 404.
+  (Distinct from the CLI's `code`, which is an exit code.)
 
 ## 6. The app (draft — to be refined)
 
@@ -454,7 +455,8 @@ Viewing a drop in the detail pane sets `read_at`.
 - `drop add -` with empty stdin: exit 1.
 - Server port range exhausted: the app shows a banner and keeps running without the
   server; `drop watch` exits 1 with that reason.
-- Server request without a valid token or with a non-loopback `Host` → HTTP 401 / 403.
+- Server request without a valid token → HTTP 401; with a `Host` outside the §5.2
+  allowlist → HTTP 403.
 
 ## 8. Testing
 
