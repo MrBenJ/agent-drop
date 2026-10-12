@@ -21,7 +21,7 @@ picks up handoffs left by another agent. Handoff pickup is a core feature, not a
 - Any agent that can run a shell command can drop, find, read, and claim files with no
   per-agent integration.
 - How drops are labeled (`--from`, `--project`, tags) is up to each user; Agent Drop
-  imposes no naming convention.
+  imposes no naming convention beyond `/` as an optional level separator (§4.1).
 - The human sees new drops at a glance (menu bar unread count, optional notification)
   and can view any Markdown drop rendered, or open it in VS Code, in one click.
 - Handoffs have visible status: open, claimed, or done (allowed transitions in §4.2).
@@ -43,7 +43,8 @@ picks up handoffs left by another agent. Handoff pickup is a core feature, not a
 
 ## 2. Architecture
 
-One repo, one Swift package workspace, four products:
+One repo: a Swift package (`AgentDropCore`, `AgentDropServer`, `drop`) plus an Xcode
+project for the app (§9).
 
 | Product | Kind | Responsibility |
 |---|---|---|
@@ -75,8 +76,9 @@ the prompt.
 
 **First-run setup** happens in the app's window: folder confirmation (and any macOS
 access prompt) plus the launch-at-login question (§6). Finishing it writes
-`"setupComplete": true` to `config.json`. Until then the app never starts its server
-without its window, and `drop watch` refuses to launch it (§4 Watching). Other CLI commands work
+`"setupComplete": true` to `config.json`. Until then neither the server nor the content
+watcher runs (§5.2), so `drop watch` always exits 1 (there is no server to connect to;
+§4 Watching). Other CLI commands work
 before setup; they run under the terminal's own file access.
 
 ## 3. Storage
@@ -156,7 +158,9 @@ The CLI performs the same missing-file check lazily when it resolves an id.
 ### Global rules
 
 - Never prompts interactively.
-- `--json` on every command produces machine-readable output on stdout.
+- `--json` is accepted on every command except those that print raw file contents
+  (`drop cat`, `drop latest --cat`), where it exits 1. Elsewhere it produces
+  machine-readable output on stdout.
 - Exit codes: `0` ok · `1` error (including bad input, ambiguous id, wrong kind) ·
   `2` not found · `3` conflict (e.g. handoff already claimed).
 - Human-readable output is the default; errors go to stderr.
@@ -176,11 +180,14 @@ The CLI performs the same missing-file check lazily when it resolves an id.
 The CLI **never guesses or fills in** these values: no git-repo inference, no
 environment-variable detection. A value is stored only if it was passed explicitly.
 
-- **They belong to the user.** Agent Drop stores and filters them and never interprets
-  them. Each user (or their harness) decides what goes in them.
+- **They belong to the user.** The meaning of these values is up to each user (or their
+  harness). Agent Drop applies exactly one rule: `/` separates levels (below). Values
+  without `/` are a flat list and are never touched. Nothing else about a value is
+  interpreted, and exact-match filters (`--from`, `--project`) always compare the whole
+  string.
 - **Rules:** non-empty, leading/trailing whitespace trimmed, no newlines or control
   characters, at most 200 characters. Spaces, slashes, brackets, etc. are allowed.
-- **`/` is an optional grouping separator.** If values contain `/`, the app shows them
+- **`/` is the one documented convention: a level separator.** If values contain `/`, the app shows them
   as a collapsible tree and `--from-under <prefix>` matches the prefix itself and
   everything beneath it (`--from-under djleague` matches `djleague` and
   `djleague/autodev/…`, but not `djleague2`). Values without `/` are simply a flat list.
@@ -197,7 +204,7 @@ passes `workspace/tab`, or `workspace/space/tab` for sub-workspaces, e.g.
 
 | Command | Behavior |
 |---|---|
-| `drop add <path> [flags]` | Copies the file, or the directory recursively, into the drop folder and registers it; prints the id. If `<path>` is already a top-level entry of the drop folder, registers in place. Any other path inside the drop folder (inside a subdirectory) → exit 1. Symlink → exit 1. Optional `--name <name>` sets the drop's top-level name (default: the source's basename). **Name rule** (also for `drop add -`): the resulting name must not start with `.`, be empty, contain `/`, or be `.`/`..` → exit 1, suggesting `--name`. Name collision → suffix (`plan-2.md`). Flags: `--title`, `-m/--desc`, `--project`, `--tag <t>` (repeatable), `--from` (required), `--name`, `--handoff` (sets `kind=handoff`, `status=open`), `--move` (move instead of copy). Re-adding an already-registered entry → exit 3. |
+| `drop add <path> [flags]` | Copies the file, or the directory recursively, into the drop folder and registers it; prints the id. If `<path>` is already a top-level entry of the drop folder, registers in place; with `--name`, the entry is first renamed to that name (name rule applies; name taken → exit 3). Any other path inside the drop folder (inside a subdirectory) → exit 1. Symlink → exit 1. Optional `--name <name>` sets the drop's top-level name (default: the source's basename). **Name rule** (also for `drop add -`): the resulting name must not start with `.`, be empty, contain `/`, or be `.`/`..` → exit 1, suggesting `--name`. Name collision → suffix (`plan-2.md`). Flags: `--title`, `-m/--desc`, `--project`, `--tag <t>` (repeatable), `--from` (required), `--name`, `--handoff` (sets `kind=handoff`, `status=open`), `--move` (move instead of copy). Re-adding an already-registered entry → exit 3. |
 | `drop add - --name <filename> [flags]` | Same, reading content from stdin (always a file drop). `--name` required; same name rule. |
 | `drop edit <id> [flags]` | Updates metadata: `--title`, `-m/--desc`, `--project`, `--tag <t>`, `--untag <t>`, `--kind note\|handoff`. Kind changes follow §4.2 ("Changing kind"). |
 | `drop archive <id>` | Sets `archived=true`. `drop archive --undo <id>` reverses it. The file is untouched. |
@@ -237,10 +244,11 @@ opening its window** and waits up to 10 s for the server. Server unreachable aft
 
 "Without opening its window" is not invisible: the menu bar icon appears as on any
 launch, so the user can always see the app is running and quit it. The app **keeps
-running** after the watch ends, like any normal launch. Reason: `drop watch` can only
-launch it after first-run setup, where the user has already chosen whether they want it
-running at login; quitting when watchers leave would also cut off other server clients
-and stop `content` events (§5.1).
+running** after the watch ends. Reason: it behaves like any Mac app: once launched, it
+runs until quit. It is always visible in the menu bar, so the user can see it and quit
+it. Quitting automatically when watchers leave would cut off other server clients and
+stop `content` events (§5.1). The launch-at-login setting controls only whether it
+starts at login.
 
 **Human and setup**
 
@@ -250,7 +258,7 @@ and stop `content` events (§5.1).
 | `drop code <id>` | Runs `code <absolute path>`. If `code` isn't on PATH → exit 1 with a hint. |
 | `drop where` | Prints the drop folder path in use. |
 | `drop config set-folder <path>` | Sets the drop folder in `config.json` (creating the folder if needed). |
-| `drop config set-retention <days\|forever>` | Sets `eventRetentionDays` (§5.1). |
+| `drop config set-retention <days\|forever>` | Sets `eventRetentionDays` (§5.1). `days` is a whole number ≥ 1; anything else → exit 1. |
 | `drop config show` | Prints every `config.json` setting: folder, event retention, server port, setup status. |
 | `drop agent-instructions` | Prints a Markdown snippet for `CLAUDE.md` / `AGENTS.md` teaching an agent when and how to use `drop` (dropping with context, checking `drop inbox`, claim → done). It tells the agent to pass whatever identity its harness provides as `--from`/`--by`, and shows quoting for values with spaces. |
 
@@ -335,8 +343,9 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
   next one. `"forever"` disables cleanup and the log grows without limit.
 - **Cleanup only ever deletes event-log rows.** Drops, their files, and their metadata
   are never deleted by it.
-- Disclosure: the app's Settings → Event history shows the choice (7 / 30 / 90 days /
-  Forever) with the note "Old entries in the change log are deleted as new changes come
+- Disclosure: the app's Settings → Event history shows the current value, with presets
+  (7 / 30 / 90 days / Forever) and a **Custom…** field accepting any whole number of
+  days, so any value set from the CLI is displayed as-is. It carries the note "Old entries in the change log are deleted as new changes come
   in. Your drops and files are never deleted." `drop config show` prints it. The README
   documents it under "What Agent Drop stores and deletes".
 
@@ -353,7 +362,18 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 
 ### 5.2 Server
 
-- Implemented in `AgentDropServer`; hosted by the app whenever the app is running. HTTP on `127.0.0.1` only.
+- Implemented in `AgentDropServer` and hosted by the app. Two parts, each with one rule:
+
+  | Part | Runs when |
+  |---|---|
+  | **Content watcher** (writes `content` events, §5.1) | App running **and** setup complete |
+  | **Server** (HTTP + SSE) | App running **and** setup complete **and** a port was bound |
+
+  Both start the moment setup completes and keep running with the window closed. If no
+  port is available, the content watcher still runs (clients catch up via
+  `Last-Event-ID` later) and the app shows a banner with **Retry**, which re-attempts
+  the port range.
+- HTTP on `127.0.0.1` only.
 - Port: `47390` by default, configurable in `config.json`. If it is taken, the app tries
   the next 9 ports.
 - On start, the app writes `~/Library/Application Support/AgentDrop/server.json`
@@ -391,7 +411,7 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 - Setting: **Launch at login** (via `SMAppService`). During first-run setup (§2) the app asks once:
   "Start Agent Drop at login? Agents and apps that watch for changes need it running",
   with **Yes** pre-selected; afterwards it's an ordinary setting. Reason: the local
-  server (§5.2) and `content` events (§5.1) exist only while the app runs, and other
+  server (§5.2) and `content` events (§5.1) exist only while the app runs (after setup), and other
   applications can't launch it the way `drop watch` does. Idle cost is a file watcher
   plus a listening socket; nothing polls.
 - Setting: **Notify on new drops** (via `UserNotifications`), default on. Clicking a
@@ -435,7 +455,8 @@ Viewing a drop in the detail pane sets `read_at`.
 ### Rendering
 
 - Markdown: GFM via swift-cmark → HTML, displayed in a `WKWebView` with bundled CSS
-  that follows light/dark mode. Relative image links resolve against the drop folder.
+  that follows light/dark mode. Relative links and images resolve against the rendered file's own directory (for a
+  folder drop's README, the folder drop itself).
   Links open in the default browser. JavaScript in the rendered content is disabled.
 - Plain text / code files: monospace text view.
 - Everything else (images, PDFs, …): Quick Look preview (`QLPreviewView`).
@@ -453,8 +474,9 @@ Viewing a drop in the detail pane sets `read_at`.
 - Source path for `drop add` doesn't exist: exit 2. Exists but isn't a regular file or
   directory (symlink, socket, device, …): exit 1.
 - `drop add -` with empty stdin: exit 1.
-- Server port range exhausted: the app shows a banner and keeps running without the
-  server; `drop watch` exits 1 with that reason.
+- Server port range exhausted: the app shows a banner with **Retry** and keeps running
+  without the server (the content watcher still runs, §5.2); `drop watch` exits 1 with
+  that reason.
 - Server request without a valid token → HTTP 401; with a `Host` outside the §5.2
   allowlist → HTTP 403.
 
@@ -479,7 +501,8 @@ Viewing a drop in the detail pane sets `read_at`.
   drops) and is skipped with `"forever"`.
 - **`AgentDropServerTests`** (server started in-process against a temp store): token and `Host` checks, each
   endpoint, SSE delivery for each event type, `Last-Event-ID` resume, content
-  debouncing, inbox filtering. `drop watch` tested end-to-end against it.
+  debouncing, inbox filtering. (`drop watch` end-to-end tests live in `dropCLITests`,
+  against an in-process server.)
 - **App**: view models unit-tested against a temp store; UI verified manually against a
   checklist (menu bar count, notification, rendered view, VS Code open, unregistered
   register flow).
