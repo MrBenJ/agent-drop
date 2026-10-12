@@ -12,7 +12,7 @@ struct DropListView: View {
             // only). Every row is three lines, so a fixed minimum keeps them all whole.
             .environment(\.defaultMinListRowHeight, DropRow.height)
             .searchable(text: $library.search, placement: .toolbar, prompt: "Title, description, filename")
-            .navigationTitle(title)
+            .navigationTitle(DropFormatting.windowTitle(title))
     }
 
     @ViewBuilder private var content: some View {
