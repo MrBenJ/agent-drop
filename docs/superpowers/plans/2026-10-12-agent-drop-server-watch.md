@@ -1226,6 +1226,31 @@ struct EventHubTests {
         await hub.close()
     }
 
+    /// Spec §6: an idle app has no timers. The keepalive tick runs only while someone listens.
+    @Test func heartbeatTimerRunsOnlyWhileClientsAreConnected() async throws {
+        let f = try StoreFixture()
+        let hub = try EventHub(store: f.store)
+        await hub.startHeartbeat(every: .milliseconds(50))
+        #expect(await !hub.isTicking)
+
+        let first = Task { for await _ in try await hub.subscribe(.all, resumeFrom: nil) {} }
+        let second = Task { for await _ in try await hub.subscribe(.all, resumeFrom: nil) {} }
+        #expect(await eventually { await hub.subscriberCount == 2 })
+        #expect(await hub.isTicking)
+
+        first.cancel()
+        #expect(await eventually { await hub.subscriberCount == 1 })
+        #expect(await hub.isTicking)
+        second.cancel()
+        #expect(await eventually { await !hub.isTicking })
+
+        let again = Task { for await _ in try await hub.subscribe(.all, resumeFrom: nil) {} }
+        #expect(await eventually { await hub.isTicking })
+        again.cancel()
+        await hub.close()
+        #expect(await !hub.isTicking)
+    }
+
     @Test func closeEndsStreamsAndRefusesNewOnes() async throws {
         let f = try StoreFixture()
         let hub = try EventHub(store: f.store)
@@ -1295,6 +1320,7 @@ public actor EventHub {
     private var lastSeq: Int64
     private var subscribers: [UUID: Subscriber] = [:]
     private var heartbeatTask: Task<Void, Never>?
+    private var heartbeatInterval: Duration?
     private var closed = false
 
     public init(store: DropStore) throws {
@@ -1335,6 +1361,7 @@ public actor EventHub {
         continuation.onTermination = { [weak self] _ in
             Task { await self?.remove(id) }
         }
+        updateHeartbeat()
         return stream
     }
 
@@ -1353,9 +1380,25 @@ public actor EventHub {
     /// Keeps idle connections alive and lets the server notice clients that went away.
     /// Each tick also pokes: the safety net for writers FSEvents can't see (a store
     /// connection that stays open only touches its WAL file, which reports nothing until
-    /// it closes). It's the keepalive timer that already runs, not an extra poll.
+    /// it closes). The timer runs only while at least one client is connected, so an idle
+    /// app has no timers at all (spec §6); a client connecting later catches up anyway.
     public func startHeartbeat(every interval: Duration) {
+        heartbeatInterval = interval
         heartbeatTask?.cancel()
+        heartbeatTask = nil
+        updateHeartbeat()
+    }
+
+    /// True while the keepalive timer runs. For tests.
+    var isTicking: Bool { heartbeatTask != nil }
+
+    private func updateHeartbeat() {
+        guard let interval = heartbeatInterval, !closed, !subscribers.isEmpty else {
+            heartbeatTask?.cancel()
+            heartbeatTask = nil
+            return
+        }
+        guard heartbeatTask == nil else { return }
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: interval)
@@ -1382,6 +1425,7 @@ public actor EventHub {
 
     private func remove(_ id: UUID) {
         subscribers[id] = nil
+        updateHeartbeat()
     }
 }
 ```
@@ -4947,7 +4991,7 @@ git commit -m "feat: agentdrop-devhost stand-in, real-binary watch smoke test, R
   Each has a test, or a CI check for the build and smoke items.
 - **Independent review (fresh reviewer, whole branch), all addressed:**
   - **M1:** overlapping `start`/`stop`/`retryPort` leaked a server. They now run one at a time.
-  - **M2:** writes through a store connection that stays open never streamed. Fixed with commit observation for the service's own store plus a check on each keepalive tick.
+  - **M2:** writes through a store connection that stays open never streamed. Fixed with commit observation for the service's own store plus a check on each keepalive tick. After review with Ben, that timer runs only while at least one client is connected, so the idle app keeps §6's "nothing polls".
   - **M3:** a reconnecting `drop watch <id>` exited 2 instead of replaying `removed`. The server now accepts a removed id within the same store.
   - **M4:** the `server.json` temp file was briefly 0644. It's now created 0600 with `O_EXCL`.
   - **M5:** the protected-folder check missed case variants and symlinks. It now compares real paths, case-folded.
