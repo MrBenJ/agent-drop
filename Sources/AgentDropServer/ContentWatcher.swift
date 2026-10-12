@@ -15,6 +15,11 @@ public actor ContentWatcher {
     private var fingerprints: [String: Int] = [:]
     private var pending: [String: Task<Void, Never>] = [:]
     private var stopped = false
+    /// Entries being settled right now, and those that changed again meanwhile. Settles
+    /// suspend (fingerprinting), so two for one entry could otherwise overlap and the
+    /// older one could overwrite the newer fingerprint.
+    private var settling: Set<String> = []
+    private var settleAgain: Set<String> = []
     private let beforeFingerprint: @Sendable () async -> Void
 
     /// `onChange` runs after this watcher wrote one or more events. `beforeFingerprint` is
@@ -67,6 +72,17 @@ public actor ContentWatcher {
 
     private func settle(_ name: String) async {
         pending[name] = nil
+        guard !settling.contains(name) else {
+            settleAgain.insert(name)
+            return
+        }
+        settling.insert(name)
+        await settleExclusively(name)
+        settling.remove(name)
+        if settleAgain.remove(name) != nil { entryChanged(name) }
+    }
+
+    private func settleExclusively(_ name: String) async {
         guard !stopped, let drop = try? store.drop(filename: name) else { return }
         var wrote = false
         do {

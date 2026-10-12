@@ -144,9 +144,8 @@ struct ContentWatcherTests: Sendable {
         try write("back again", to: url)
         await watcher.entryChanged("a.md")
         #expect(await eventually { (try? Self.types(f)) == [.created, .missing, .metadata] })
-        try await Task.sleep(for: .milliseconds(150))
+        #expect(await eventually { changes.value == 2 })
         #expect(try Self.types(f) == [.created, .missing, .metadata])
-        #expect(changes.value == 2)
 
         // The return re-baselined it, so the next edit is an ordinary content change.
         try write("edited after return", to: url)
@@ -177,6 +176,32 @@ struct ContentWatcherTests: Sendable {
         #expect(await eventually { (try? Self.types(f)) == [.created, .missing] })
         try await Task.sleep(for: .milliseconds(100))
         #expect(try Self.types(f) == [.created, .missing])
+    }
+
+    /// A change arriving while the same entry is still being settled is settled again
+    /// afterwards, never in parallel (the older result must not win).
+    @Test func overlappingSettlesForOneEntryRunInOrder() async throws {
+        let f = try StoreFixture()
+        let drop = try f.add("a.md", "1")
+        let url = f.store.path(of: drop)
+        let gate = Locked(true)
+        let watcherBox = Locked<ContentWatcher?>(nil)
+        let watcher = ContentWatcher(store: f.store, debounce: .milliseconds(5), onChange: {},
+                                     beforeFingerprint: {
+            // The first settle edits the file and reports another change while it's running.
+            var first = false
+            gate.withLock { first = $0; $0 = false }
+            guard first else { return }
+            try? Data("22".utf8).write(to: url)
+            await watcherBox.value?.entryChanged("a.md")
+            try? await Task.sleep(for: .milliseconds(50))
+        })
+        watcherBox.withLock { $0 = watcher }
+        await watcher.baselineNewDrops()
+        await watcher.entryChanged("a.md")
+        #expect(await eventually { (try? Self.types(f)) == [.created, .content] })
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(try Self.types(f) == [.created, .content])
     }
 
     @Test func stoppedWatcherIgnoresLateChanges() async throws {
