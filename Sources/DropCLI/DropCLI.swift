@@ -72,7 +72,7 @@ struct DropCommand: ParsableCommand {
         abstract: "Agent Drop: a shared drop folder with context, for humans and coding agents.",
         version: "0.1.0",
         subcommands: [Add.self, Edit.self, Archive.self, ListCommand.self, Show.self, Cat.self, PathCommand.self,
-                      Latest.self, Inbox.self, Claim.self, Release.self, Done.self, Reopen.self, Code.self,
+                      Latest.self, Inbox.self, Claim.self, Release.self, Done.self, Reopen.self, Open.self, Code.self,
                       Watch.self, Where.self, Config.self, AgentInstructions.self]
     )
 }
