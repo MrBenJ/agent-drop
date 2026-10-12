@@ -38,6 +38,8 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "drop", dependencies: ["DropCLI"]),
+        // Development stand-in for AgentDrop.app until Plan 3. Not a shipped product.
+        .executableTarget(name: "agentdrop-devhost", dependencies: ["AgentDropServer", "AgentDropCore"]),
         .testTarget(
             name: "AgentDropCoreTests",
             dependencies: ["AgentDropCore", .product(name: "GRDB", package: "GRDB.swift")]

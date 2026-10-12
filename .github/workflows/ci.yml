@@ -11,5 +11,6 @@ jobs:
       - run: swift --version
       - run: swift test
       - run: swift build -c release --product drop
+      - run: swift build -c release --product agentdrop-devhost
       - name: Real-binary smoke test (ephemeral runner only)
-        run: Scripts/smoke.sh .build/release/drop
+        run: Scripts/smoke.sh .build/release/drop .build/release/agentdrop-devhost
