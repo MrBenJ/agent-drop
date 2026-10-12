@@ -46,6 +46,16 @@ struct EventHubTests {
         #expect(frames.last?.message?.seq == 2)
     }
 
+    @Test func subscribingWithoutCursorSkipsEverythingAlreadyWritten() async throws {
+        let f = try StoreFixture()
+        let hub = try EventHub(store: f.store)
+        try f.add("a.md")   // written after the hub started, never poked
+        let stream = try await hub.subscribe(.all, resumeFrom: nil)
+        try f.add("b.md")
+        await hub.poke()
+        #expect(await collect(stream, count: 1).compactMap(\.message).map(\.seq) == [2])
+    }
+
     @Test func cursorAheadOfTheLogNeverDuplicates() async throws {
         let f = try StoreFixture()
         let hub = try EventHub(store: f.store)

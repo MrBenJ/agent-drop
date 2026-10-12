@@ -46,6 +46,8 @@ public actor EventHub {
             continuation.finish()
             return stream
         }
+        // Catch up first, so "live" means "written after this call", not "after the last poke".
+        poke()
         var after = lastSeq
         if let cursor {
             if cursor.storeID != storeID {
