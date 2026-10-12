@@ -35,7 +35,7 @@ extension DropStore {
         return try refreshMissing(drop)
     }
 
-    private func refreshMissing(_ drop: Drop) throws -> Drop {
+    func refreshMissing(_ drop: Drop) throws -> Drop {
         guard drop.missing == entryIsPresent(drop) else { return drop }
         let now = self.now()
         return try mutate { db in

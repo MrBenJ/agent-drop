@@ -9,7 +9,9 @@ if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
   exit 0
 fi
 
-DROP="${1:?usage: Scripts/smoke.sh <path-to-drop-binary>}"
+DROP="${1:?usage: Scripts/smoke.sh <path-to-drop-binary> <path-to-agentdrop-devhost>}"
+DEVHOST="${2:?usage: Scripts/smoke.sh <path-to-drop-binary> <path-to-agentdrop-devhost>}"
+support="$HOME/Library/Application Support/AgentDrop"
 work="${RUNNER_TEMP:?}/agentdrop-smoke"
 mkdir -p "$work"
 
@@ -30,4 +32,40 @@ set -e
 "$DROP" done "$id" --note "smoke ok" >/dev/null
 [[ -z "$("$DROP" inbox --project smoke)" ]]
 [[ -f "$HOME/AgentDrop/.agentdrop/index.sqlite" ]]
+
+# drop watch (Plan 2). Before setup it refuses with the spec's message.
+set +e
+out=$("$DROP" watch --inbox 2>&1)
+code=$?
+set -e
+[[ "$code" -eq 1 && "$out" == *"hasn't been set up yet"* ]]
+
+# The dev host stands in for the app: same service, real server.json, real FSEvents.
+"$DEVHOST" --temporary-setup > "$work/devhost.log" 2>&1 &
+host=$!
+for _ in $(seq 1 100); do [[ -f "$support/server.json" ]] && break; sleep 0.1; done
+grep -q '"status":"running"' "$support/server.json"
+
+"$DROP" watch --inbox --project smoke2 --once --json > "$work/watch.out" &
+watcher=$!
+# The watcher may not be subscribed yet, so keep adding handoffs until it sees one and
+# exits (--once). Every handoff is an arrival; at most 20 tries.
+ids=()
+for n in $(seq 1 20); do
+  printf '# Second %s\n' "$n" > "$work/second-$n.md"
+  ids+=("$("$DROP" add "$work/second-$n.md" --from "ci/smoke" --project smoke2 --handoff)")
+  sleep 1
+  kill -0 "$watcher" 2>/dev/null || break
+done
+kill "$watcher" 2>/dev/null && { echo "drop watch never saw an arrival"; exit 1; }
+wait "$watcher"
+seen=$(sed -n 's/.*"dropId":"\([a-z0-9]*\)".*/\1/p' "$work/watch.out")
+[[ " ${ids[*]} " == *" $seen "* ]]
+grep -q '"type":"created"' "$work/watch.out"
+
+kill -INT "$host"
+wait "$host"
+[[ ! -f "$support/server.json" ]]
+# --temporary-setup put config.json back exactly (it didn't exist before).
+[[ ! -f "$support/config.json" ]]
 echo "smoke: ok"

@@ -1,4 +1,5 @@
 import AgentDropCore
+import AgentDropServer
 import Foundation
 
 /// Buffered (tests) or pass-through (live) output.
@@ -33,11 +34,21 @@ public struct CLIContext: Sendable {
     public var stderr: OutputSink
     public var findExecutable: @Sendable (String) -> URL?
     public var runProcess: @Sendable (URL, [String]) throws -> Int32
+    /// `drop watch`: start AgentDrop.app without opening its window (spec §4 Watching).
+    public var launchApp: @Sendable () throws -> Void
+    public var isProcessAlive: @Sendable (Int32) -> Bool
+    /// How long `drop watch` waits for the app's server (spec: 10 s).
+    public var serverWait: Duration
 
     public init(config: ConfigStore, cwd: URL, now: @escaping @Sendable () -> Date,
                 readStdin: @escaping @Sendable () -> Data, stdout: OutputSink, stderr: OutputSink,
                 findExecutable: @escaping @Sendable (String) -> URL?,
-                runProcess: @escaping @Sendable (URL, [String]) throws -> Int32) {
+                runProcess: @escaping @Sendable (URL, [String]) throws -> Int32,
+                launchApp: @escaping @Sendable () throws -> Void = {
+                    throw AgentDropError.invalid("Launching Agent Drop isn't available here")
+                },
+                isProcessAlive: @escaping @Sendable (Int32) -> Bool = ServerInfo.isProcessAlive,
+                serverWait: Duration = .seconds(10)) {
         self.config = config
         self.cwd = cwd
         self.now = now
@@ -46,12 +57,38 @@ public struct CLIContext: Sendable {
         self.stderr = stderr
         self.findExecutable = findExecutable
         self.runProcess = runProcess
+        self.launchApp = launchApp
+        self.isProcessAlive = isProcessAlive
+        self.serverWait = serverWait
     }
+
+    /// AgentDrop.app's bundle identifier (Plan 3 builds the app with it).
+    public static let appBundleID = "io.github.mrbenj.AgentDrop"
 
     @TaskLocal public static var current: CLIContext = .live()
 
     public static func live() -> CLIContext {
-        CLIContext(
+        let runProcess: @Sendable (URL, [String]) throws -> Int32 = { executable, arguments in
+            let process = Process()
+            process.executableURL = executable
+            process.arguments = arguments
+            // Drain both streams together before waiting, so even verbose children
+            // cannot fill a pipe or bypass the CLI's JSON/error output policy.
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = output
+            try process.run()
+            let diagnostics = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            if process.terminationStatus != 0 {
+                let detail = String(decoding: diagnostics, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                throw AgentDropError.invalid("`\(executable.lastPathComponent)` exited with status \(process.terminationStatus)"
+                    + (detail.isEmpty ? "" : ": \(detail)"))
+            }
+            return process.terminationStatus
+        }
+        return CLIContext(
             config: .live(),
             cwd: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true),
             now: { Date() },
@@ -66,25 +103,16 @@ public struct CLIContext: Sendable {
                 }
                 return nil
             },
-            runProcess: { executable, arguments in
-                let process = Process()
-                process.executableURL = executable
-                process.arguments = arguments
-                // Drain both streams together before waiting, so even verbose children
-                // cannot fill a pipe or bypass the CLI's JSON/error output policy.
-                let output = Pipe()
-                process.standardOutput = output
-                process.standardError = output
-                try process.run()
-                let diagnostics = output.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                if process.terminationStatus != 0 {
-                    let detail = String(decoding: diagnostics, as: UTF8.self)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    throw AgentDropError.invalid("`\(executable.lastPathComponent)` exited with status \(process.terminationStatus)"
-                        + (detail.isEmpty ? "" : ": \(detail)"))
+            runProcess: runProcess,
+            launchApp: {
+                // -g: don't bring it to the front. `--windowless` tells the app not to open its
+                // window (spec §4 Watching); the menu bar icon still appears.
+                do {
+                    _ = try runProcess(URL(fileURLWithPath: "/usr/bin/open"),
+                                       ["-g", "-b", appBundleID, "--args", "--windowless"])
+                } catch let error as AgentDropError {
+                    throw AgentDropError.invalid("Couldn't launch Agent Drop. Is AgentDrop.app installed? (\(error.message))")
                 }
-                return process.terminationStatus
             })
     }
 

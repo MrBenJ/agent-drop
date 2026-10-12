@@ -106,7 +106,7 @@ public struct ConfigStore: Sendable {
         CFGetTypeID(n) != CFBooleanGetTypeID() && n.doubleValue == n.doubleValue.rounded()
     }
 
-    private func readDict() throws -> [String: Any] {
+    func readDict() throws -> [String: Any] {
         guard FileManager.default.fileExists(atPath: configFile.path) else { return [:] }
         let object: Any
         do {
@@ -120,7 +120,7 @@ public struct ConfigStore: Sendable {
         return dict
     }
 
-    private func writeDict(_ dict: [String: Any]) throws {
+    func writeDict(_ dict: [String: Any]) throws {
         try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
         let data = try JSONSerialization.data(
             withJSONObject: dict, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])

@@ -10,6 +10,10 @@ final class TestEnv: @unchecked Sendable {
     var stdin = Data()
     var codeExecutable: URL?
     var useRealProcess = false
+    /// `drop watch` hooks. By default launching fails, so a test must opt in.
+    var launchApp: @Sendable () throws -> Void = { throw AgentDropError.invalid("no app in tests") }
+    var isProcessAlive: @Sendable (Int32) -> Bool = { pid in pid > 0 && (kill(pid, 0) == 0 || errno == EPERM) }
+    var serverWait: Duration = .seconds(3)
     let clock = Date(timeIntervalSince1970: 1_760_208_240)
     private let lock = NSLock()
     private var _processCalls: [(URL, [String])] = []
@@ -42,12 +46,10 @@ final class TestEnv: @unchecked Sendable {
         var trimmedOut: String { out.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
-    @discardableResult
-    func run(_ arguments: String...) -> Result {
-        let out = OutputSink(), err = OutputSink()
+    private func makeContext(out: OutputSink, err: OutputSink) -> CLIContext {
         let stdin = self.stdin, clock = self.clock, code = self.codeExecutable
         let useRealProcess = self.useRealProcess
-        let context = CLIContext(
+        return CLIContext(
             config: config, cwd: cwd, now: { clock }, readStdin: { stdin },
             stdout: out, stderr: err,
             findExecutable: { $0 == "code" ? code : nil },
@@ -55,8 +57,21 @@ final class TestEnv: @unchecked Sendable {
                 if useRealProcess { return try CLIContext.live().runProcess(executable, args) }
                 self?.lock.withLock { self?._processCalls.append((executable, args)) }
                 return 0
-            })
-        let status = DropCLI.run(arguments, context: context)
+            },
+            launchApp: launchApp, isProcessAlive: isProcessAlive, serverWait: serverWait)
+    }
+
+    @discardableResult
+    func run(_ arguments: String...) -> Result {
+        let out = OutputSink(), err = OutputSink()
+        let status = DropCLI.run(arguments, context: makeContext(out: out, err: err))
+        return Result(code: status, out: out.text, err: err.text, outData: out.data)
+    }
+
+    /// For `drop watch`. `out` can be read while the command is still running.
+    func runAsync(_ arguments: [String], out: OutputSink = OutputSink()) async -> Result {
+        let err = OutputSink()
+        let status = await DropCLI.runAsync(arguments, context: makeContext(out: out, err: err))
         return Result(code: status, out: out.text, err: err.text, outData: out.data)
     }
 

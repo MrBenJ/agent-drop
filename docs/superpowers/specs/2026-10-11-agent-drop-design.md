@@ -278,6 +278,17 @@ running, it launches it **without
 opening its window** and waits up to 10 s for the server. Server unreachable after that
 → exit 1. Unknown id → exit 2.
 
+Launching means `open -g -b io.github.mrbenj.AgentDrop --args --windowless`: the app's
+bundle identifier is `io.github.mrbenj.AgentDrop`, and `--windowless` tells it not to open
+its window. Only the first connection launches the app. When a stream drops later (the
+app quit, restarted its server, or switched folders), `drop watch` waits up to 10 s for a
+live `server.json` again and resumes with `Last-Event-ID`; if none appears it exits 1
+("Lost the connection to Agent Drop"). A `reset` does not count as the event `--once`
+waits for. Human-readable lines are `<at>\t<type>\t<dropId>\t<summary>`, with terminal
+control characters replaced (titles come from file contents); `--json` prints each event's
+`data` object as sent by the server, and `{"data": {"reason": …}, "type": "reset"}` for a
+reset.
+
 "Without opening its window" is not invisible: the menu bar icon appears as on any
 launch, so the user can always see the app is running and quit it. The app **keeps
 running** after the watch ends. Reason: it behaves like any Mac app: once launched, it
@@ -374,6 +385,12 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
 - `content` events are written by `AgentDropServer`'s folder watcher (running in the app) when FSEvents reports a change to a drop's
   file (or anything inside a folder drop), debounced per drop (300 ms of quiet). Content
   changes made while the app isn't running produce no event.
+  A change counts only when the drop's fingerprint (size, modification time and file
+  identity of everything inside it; dot-files and folders' own timestamps excluded, so
+  Finder's `.DS_Store` is not a change) differs from the last one seen. A drop seen for
+  the first time only gets a baseline, so registering a drop never emits `content`. The
+  same watcher records `missing` when a drop's entry disappears and `metadata {missing:
+  false}` when it returns (§3.2), instead of `content`.
 - **Retention (disclosed, configurable).** `eventRetentionDays` in `config.json`:
   a number of days (default `30`) or `"forever"`. When it is a number, every transaction
   that appends an event row (mutations **and** `content` events) also deletes event rows
@@ -452,11 +469,34 @@ Errors with `--json` print `{"error": "<message>", "code": <exit code>}` to stdo
   `Last-Event-ID` from a different `storeId` first receives one `reset` event
   (`data: {"reason": "drop folder changed"}`), then live events from that point; no
   history from the old store is replayed.
+- With a `Last-Event-ID` from the current store, `GET /events?drop=<id>` also accepts the
+  id of a drop whose record was removed meanwhile, so the replay can deliver `removed`.
 - `drop watch <id>` reconnects automatically; if the id isn't in the new store it exits
   2 ("drop folder changed; <id> is not in the current folder"). `drop watch --inbox`
   prints the `reset` and continues on the new folder's Inbox.
 - Errors: `{"error": "<message>", "status": <HTTP status>}` with HTTP 400 / 401 / 403 / 404.
-  (Distinct from the CLI's `code`, which is an exit code.)
+  (Distinct from the CLI's `code`, which is an exit code.) Two more can occur: 503 for
+  "store busy, retry" (§7) and 500 for an unexpected failure.
+- **How new rows reach streams.** The server reads the event log; it isn't told about
+  writes. Commits through the hosting process's own store are noticed at once (the app
+  writes through the service's store). Writes from other processes (the CLI) are noticed
+  through FSEvents on `.agentdrop/`. A writer that keeps its connection open produces no
+  FSEvents until it closes, so the 15 s keepalive tick also checks for new rows. That
+  timer runs only while at least one client is connected; with no clients the app has
+  no timers at all (§6), and a client that connects later catches up from the log.
+- **A fresh stream** (no `Last-Event-ID`) opens with an id-only frame, `id:
+  <storeId>:<seq>` and no data, marking where live delivery starts. EventSource clients
+  record it as their last event id without dispatching anything, so even a client that
+  received no event yet resumes correctly, and gets `reset` after a folder switch.
+  While clients are connected, each gets an SSE comment (`: keepalive`) every 15 s.
+- Query parameters are checked strictly: an unknown parameter (a typo such as `projct`)
+  is a 400, never a silently wider result. Flags (`handoffs`, `unread`, `all`, `inbox`)
+  are true when present with no value or `true`. `project` on `/events` requires `inbox`.
+- A path id is percent-decoded before matching, so `/drops/my%20plan.md` finds
+  `my plan.md`.
+- `GET /drops/:id/content` for a folder drop returns `{"id", "entries": [{"path",
+  "type": "file" | "directory" | "symlink" | "other", "size"?, "target"?}]}`, recursively,
+  sorted by path. Links appear with their `target` text and are never followed (§3).
 
 ## 6. The app (draft — to be refined)
 
