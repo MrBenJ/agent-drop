@@ -150,6 +150,9 @@ public struct SSEParser: Sendable {
     private var event: String?
     private var data: [String] = []
     private var lineBuffer: [UInt8] = []
+    /// The last `id:` seen at the end of any frame, including id-only frames that dispatch
+    /// no event (as an EventSource does). Send it back as `Last-Event-ID` on reconnect.
+    public private(set) var lastEventID: String?
 
     public init() {}
 
@@ -167,6 +170,7 @@ public struct SSEParser: Sendable {
         let line = raw.hasSuffix("\r") ? String(raw.dropLast()) : raw
         if line.isEmpty {
             defer { id = nil; event = nil; data = [] }
+            if let id { lastEventID = id }
             guard !data.isEmpty || event != nil else { return nil }
             return SSEEvent(id: id, event: event ?? "message", data: data.joined(separator: "\n"))
         }

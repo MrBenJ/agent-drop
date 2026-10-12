@@ -46,7 +46,9 @@ public struct AgentDropClient: Sendable {
 
     /// Opens `GET /events`. Throws `HTTPFailure` for a non-200 answer. The stream ends
     /// when the server closes the connection.
-    public func events(query: [URLQueryItem] = [], lastEventID: String? = nil) async throws
+    /// `onCursor` receives every new last-event id, including those of id-only frames.
+    public func events(query: [URLQueryItem] = [], lastEventID: String? = nil,
+                       onCursor: @escaping @Sendable (String) -> Void = { _ in }) async throws
         -> AsyncThrowingStream<SSEEvent, Error>
     {
         let (bytes, response) = try await URLSession.shared.bytes(
@@ -62,8 +64,14 @@ public struct AgentDropClient: Sendable {
             let task = Task {
                 var parser = SSEParser()
                 do {
+                    var cursor = lastEventID
                     for try await byte in bytes {
-                        if let event = parser.feed(byte: byte) { continuation.yield(event) }
+                        let event = parser.feed(byte: byte)
+                        if let id = parser.lastEventID, id != cursor {
+                            cursor = id
+                            onCursor(id)
+                        }
+                        if let event { continuation.yield(event) }
                     }
                     continuation.finish()
                 } catch {

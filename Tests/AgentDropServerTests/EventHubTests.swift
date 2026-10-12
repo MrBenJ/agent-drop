@@ -56,6 +56,18 @@ struct EventHubTests {
         #expect(await collect(stream, count: 1).compactMap(\.message).map(\.seq) == [2])
     }
 
+    @Test func freshSubscriptionsOpenWithTheirStartingCursor() async throws {
+        let f = try StoreFixture()
+        try f.add("a.md")
+        let hub = try EventHub(store: f.store)
+        let fresh = try await hub.subscribe(.all, resumeFrom: nil)
+        #expect(await collect(fresh, count: 1, includeCursor: true) == [.cursor(EventCursor(storeID: f.store.storeID, seq: 1))])
+        let resumed = try await hub.subscribe(.all, resumeFrom: EventCursor(storeID: f.store.storeID, seq: 1))
+        try f.add("b.md")
+        await hub.poke()
+        #expect(await collect(resumed, count: 1, includeCursor: true).first?.message?.seq == 2)
+    }
+
     @Test func cursorAheadOfTheLogNeverDuplicates() async throws {
         let f = try StoreFixture()
         let hub = try EventHub(store: f.store)

@@ -33,6 +33,7 @@ let package = Package(
             name: "DropCLI",
             dependencies: [
                 "AgentDropCore",
+                "AgentDropServer",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -42,6 +43,6 @@ let package = Package(
             dependencies: ["AgentDropCore", .product(name: "GRDB", package: "GRDB.swift")]
         ),
         .testTarget(name: "AgentDropServerTests", dependencies: ["AgentDropServer", "AgentDropCore"]),
-        .testTarget(name: "dropCLITests", dependencies: ["DropCLI", "AgentDropCore"]),
+        .testTarget(name: "dropCLITests", dependencies: ["DropCLI", "AgentDropCore", "AgentDropServer"]),
     ]
 )

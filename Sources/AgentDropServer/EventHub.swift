@@ -10,6 +10,10 @@ import Foundation
 public actor EventHub {
     public enum Frame: Equatable, Sendable {
         case event(EventMessage)
+        /// First frame of a fresh (cursor-less) subscription: where "live" starts. Sent as an
+        /// id-only SSE frame, so every client has a `Last-Event-ID` to resume with, and gets
+        /// `reset` after a folder switch even if no event arrived before it.
+        case cursor(EventCursor)
         /// The client's `Last-Event-ID` came from another store. Carries the cursor to resume from.
         case reset(EventCursor)
         case heartbeat
@@ -49,6 +53,9 @@ public actor EventHub {
         // Catch up first, so "live" means "written after this call", not "after the last poke".
         poke()
         var after = lastSeq
+        if cursor == nil {
+            continuation.yield(.cursor(EventCursor(storeID: storeID, seq: lastSeq)))
+        }
         if let cursor {
             if cursor.storeID != storeID {
                 continuation.yield(.reset(EventCursor(storeID: storeID, seq: lastSeq)))

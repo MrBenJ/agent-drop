@@ -61,6 +61,8 @@ enum HTTPAPI {
         switch frame {
         case .event(let message):
             SSE.frame(id: message.cursor.id, event: message.type, data: message.jsonString())
+        case .cursor(let cursor):
+            "id: \(cursor.id)\n\n"
         case .reset(let cursor):
             SSE.frame(id: cursor.id, event: "reset", data: SSE.resetData)
         case .heartbeat:

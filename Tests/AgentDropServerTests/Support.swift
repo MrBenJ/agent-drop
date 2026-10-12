@@ -45,13 +45,15 @@ struct StoreFixture {
     }
 }
 
-/// Reads up to `count` frames, giving up after `timeout`.
-func collect(_ stream: AsyncStream<EventHub.Frame>, count: Int,
-             timeout: Duration = .seconds(5)) async -> [EventHub.Frame] {
+/// Reads up to `count` frames, giving up after `timeout`. Skips the opening `.cursor`
+/// frame of fresh subscriptions unless `includeCursor`.
+func collect(_ stream: AsyncStream<EventHub.Frame>, count: Int, timeout: Duration = .seconds(5),
+             includeCursor: Bool = false) async -> [EventHub.Frame] {
     await withTaskGroup(of: [EventHub.Frame]?.self) { group in
         group.addTask {
             var frames: [EventHub.Frame] = []
             for await frame in stream {
+                if case .cursor = frame, !includeCursor { continue }
                 frames.append(frame)
                 if frames.count == count { break }
             }

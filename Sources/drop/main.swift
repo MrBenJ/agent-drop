@@ -1,4 +1,4 @@
 import DropCLI
 import Foundation
 
-exit(DropCLI.run(Array(CommandLine.arguments.dropFirst()), context: .live()))
+exit(await DropCLI.runAsync(Array(CommandLine.arguments.dropFirst()), context: .live()))

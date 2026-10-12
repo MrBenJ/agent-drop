@@ -63,6 +63,18 @@ struct SSETests {
                            SSEEvent(id: "s:2", event: "status", data: "{\"x\":\n1}")])
     }
 
+    @Test func idOnlyFramesMoveTheCursorWithoutAnEvent() {
+        var parser = SSEParser()
+        var events: [SSEEvent] = []
+        for byte in Array(": connected\n\nid: s:4\n\n".utf8) {
+            if let event = parser.feed(byte: byte) { events.append(event) }
+        }
+        #expect(events.isEmpty)
+        #expect(parser.lastEventID == "s:4")
+        for byte in Array("id: s:5\nevent: created\ndata: {}\n\n".utf8) { _ = parser.feed(byte: byte) }
+        #expect(parser.lastEventID == "s:5")
+    }
+
     @Test func eventMessageEmbedsDataAsJSON() throws {
         let stored = StoredEventFixture.make(seq: 9, type: .status, data: #"{"from":"open","to":"claimed"}"#)
         let message = EventMessage(storeID: "st", event: stored)
