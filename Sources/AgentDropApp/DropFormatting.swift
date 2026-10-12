@@ -11,6 +11,12 @@ public enum DropFormatting {
         return (drop.isUnread ? "● " : "") + title + " — " + details
     }
 
+    /// The window title for a sidebar view. AppKit draws it in the toolbar without
+    /// truncating, so a long project or From name would run across the list column.
+    public static func windowTitle(_ name: String, limit: Int = 28) -> String {
+        name.count > limit ? name.prefix(limit - 1) + "…" : name
+    }
+
     public static func relativeTime(_ date: Date, relativeTo now: Date = Date()) -> String {
         // Under a minute old (or a moment "ahead", from another process's clock).
         guard now.timeIntervalSince(date) >= 60 else { return "just now" }

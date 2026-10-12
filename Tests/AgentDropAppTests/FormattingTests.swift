@@ -34,6 +34,13 @@ struct FormattingTests {
         #expect(line.contains(String(repeating: "x", count: 59) + "…"))
     }
 
+    @Test func longWindowTitlesEndInAnEllipsis() {
+        #expect(DropFormatting.windowTitle("Inbox") == "Inbox")
+        let title = DropFormatting.windowTitle("Claude Code (twitch-chat-bot-design worktree)")
+        #expect(title == "Claude Code (twitch-chat-bo…")
+        #expect(title.count == 28)
+    }
+
     @Test func copyCommandFitsTheKindOfDrop() {
         #expect(DropFormatting.copyCommand(drop()) == "drop cat k7f2qa")
         #expect(DropFormatting.copyCommand(drop(isFolder: true)) == "drop path k7f2qa")
