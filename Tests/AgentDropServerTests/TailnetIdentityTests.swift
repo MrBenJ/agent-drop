@@ -33,4 +33,32 @@ struct TailnetIdentityTests {
         #expect(TailnetLocator.dnsName(fromStatusJSON: Data("nope".utf8)) == nil)
         #expect(TailnetLocator.dnsName(fromStatusJSON: Data(#"{"Self":{}}"#.utf8)) == nil)
     }
+
+    @Test func pickAddressIgnoresCGNATOnNonUtunInterfaces() {
+        let interfaces = [(name: "en0", ipv4: "100.72.1.5"), (name: "lo0", ipv4: "127.0.0.1")]
+        #expect(TailnetLocator.pickAddress(interfaces: interfaces, tailscaleIPs: nil) == nil)
+        #expect(TailnetLocator.pickAddress(interfaces: interfaces, tailscaleIPs: ["100.72.1.5"]) == nil)
+    }
+
+    @Test func pickAddressChoosesTheUtunTailnetAddress() {
+        let interfaces = [(name: "en0", ipv4: "100.72.1.5"), (name: "utun3", ipv4: "10.0.0.2"),
+                          (name: "utun4", ipv4: "100.85.64.112")]
+        #expect(TailnetLocator.pickAddress(interfaces: interfaces, tailscaleIPs: nil) == "100.85.64.112")
+        #expect(TailnetLocator.pickAddress(interfaces: interfaces, tailscaleIPs: ["100.85.64.112", "fd7a::1"])
+            == "100.85.64.112")
+    }
+
+    @Test func pickAddressRejectsUtunAddressNotInTailscaleIPs() {
+        let interfaces = [(name: "utun2", ipv4: "100.100.1.1"), (name: "utun4", ipv4: "100.85.64.112")]
+        #expect(TailnetLocator.pickAddress(interfaces: interfaces, tailscaleIPs: ["100.85.64.112"]) == "100.85.64.112")
+        #expect(TailnetLocator.pickAddress(interfaces: [(name: "utun2", ipv4: "100.100.1.1")],
+                                           tailscaleIPs: ["100.85.64.112"]) == nil)
+    }
+
+    @Test func tailscaleIPsParseStatusJSON() {
+        let json = Data(#"{"Self":{"DNSName":"x.ts.net.","TailscaleIPs":["100.85.64.112","fd7a:115c::1"]}}"#.utf8)
+        #expect(TailnetLocator.tailscaleIPs(fromStatusJSON: json) == ["100.85.64.112", "fd7a:115c::1"])
+        #expect(TailnetLocator.tailscaleIPs(fromStatusJSON: Data(#"{"Self":{}}"#.utf8)) == nil)
+        #expect(TailnetLocator.tailscaleIPs(fromStatusJSON: Data("nope".utf8)) == nil)
+    }
 }

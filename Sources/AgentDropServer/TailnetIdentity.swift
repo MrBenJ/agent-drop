@@ -46,16 +46,36 @@ public struct TailnetLocator: Sendable {
         self.locate = locate
     }
 
-    /// The first tailnet IPv4 on any interface, plus the DNS name from `tailscale status --json`.
+    /// The tailnet IPv4 on a `utun` interface (cross-checked against `tailscale status
+    /// --json` when the CLI answers), plus the DNS name from that same status.
     public static let live = TailnetLocator {
-        guard let address = firstTailnetAddress() else { return nil }
-        let name = await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+        let status = await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
             // A GCD thread, not the cooperative pool: the subprocess wait blocks.
-            DispatchQueue.global().async {
-                cont.resume(returning: statusJSON().flatMap(dnsName(fromStatusJSON:)))
-            }
+            DispatchQueue.global().async { cont.resume(returning: statusJSON()) }
         }
-        return TailnetIdentity(address: address, dnsName: name)
+        guard let address = pickAddress(interfaces: interfaceIPv4s(),
+                                        tailscaleIPs: status.flatMap(tailscaleIPs(fromStatusJSON:)))
+        else { return nil }
+        return TailnetIdentity(address: address, dnsName: status.flatMap(dnsName(fromStatusJSON:)))
+    }
+
+    /// The first address in `100.64.0.0/10` on a `utun` interface. That range is also
+    /// carrier-grade NAT, so a match on `en0` and the like is a LAN address and never
+    /// counts. When `tailscaleIPs` is known (the CLI answered), the address must be in it.
+    static func pickAddress(interfaces: [(name: String, ipv4: String)], tailscaleIPs: [String]?) -> String? {
+        interfaces.first { candidate in
+            candidate.name.hasPrefix("utun") && TailnetAccess.isTailnetPeer(candidate.ipv4)
+                && (tailscaleIPs?.contains(candidate.ipv4) ?? true)
+        }?.ipv4
+    }
+
+    /// `Self.TailscaleIPs` from `tailscale status --json`.
+    static func tailscaleIPs(fromStatusJSON data: Data) -> [String]? {
+        struct Status: Decodable {
+            struct Me: Decodable { var TailscaleIPs: [String]? }
+            var `Self`: Me?
+        }
+        return (try? JSONDecoder().decode(Status.self, from: data))?.`Self`?.TailscaleIPs
     }
 
     /// `Self.DNSName` from `tailscale status --json`, lowercased, trailing dot stripped.
@@ -70,20 +90,21 @@ public struct TailnetLocator: Sendable {
         return name.isEmpty ? nil : name
     }
 
-    private static func firstTailnetAddress() -> String? {
+    /// Every interface's IPv4 addresses, in `getifaddrs` order.
+    private static func interfaceIPv4s() -> [(name: String, ipv4: String)] {
         var list: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&list) == 0, let first = list else { return nil }
+        guard getifaddrs(&list) == 0, let first = list else { return [] }
         defer { freeifaddrs(list) }
+        var result: [(name: String, ipv4: String)] = []
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
             guard let sa = ptr.pointee.ifa_addr, sa.pointee.sa_family == sa_family_t(AF_INET) else { continue }
-            let sin = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
-            guard TailnetAccess.isTailnet(UInt32(bigEndian: sin.sin_addr.s_addr)) else { continue }
-            var addr = sin.sin_addr
+            var addr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
             var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             guard inet_ntop(AF_INET, &addr, &buf, socklen_t(buf.count)) != nil else { continue }
-            return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            let ipv4 = String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            result.append((name: String(cString: ptr.pointee.ifa_name), ipv4: ipv4))
         }
-        return nil
+        return result
     }
 
     private static let candidates = [
