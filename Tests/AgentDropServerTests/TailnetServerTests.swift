@@ -372,16 +372,62 @@ struct TailnetUploadTests {
         try DropPack.write(folder: source, to: packFile)
         let pack = try Data(contentsOf: packFile)
         let size = Int64(pack.count)
+        let overhead = Int64(DropPack.maxEntries) * TailnetServer.entryOverheadBytes
 
-        s.free.withLock { $0 = (1 << 30) + size + size / 2 } // enough for 1×, not 2×
+        s.free.withLock { $0 = (1 << 30) + overhead + size + size / 2 } // enough for 1×, not 2×
         let folder = try await s.send("POST", "/drops?kind=folder&name=notes&from=aria", body: pack)
         #expect(folder.status == 507)
         #expect(s.stagingEntries().isEmpty)
         let file = try await s.send("POST", "/drops?kind=file&name=notes.adpk&from=aria", body: pack)
         #expect(file.status == 201)
 
-        s.free.withLock { $0 = (1 << 30) + 2 * size }
+        s.free.withLock { $0 = (1 << 30) + overhead + 2 * size }
         #expect(try await s.send("POST", "/drops?kind=folder&name=notes&from=aria", body: pack).status == 201)
+    }
+
+    /// 5,000 one-byte files: a small pack on the wire, a large tree on disk.
+    private func manySmallFilesPack() -> Data {
+        rawPack((0..<5000).map { (UInt8(ascii: "f"), "f\($0)", Data([0x61])) } + [(UInt8(ascii: "e"), "", nil)])
+    }
+
+    /// Each unpacked entry takes at least a block of disk, so a folder reserves that per entry too.
+    @Test func manySmallFilesReserveTheirBlockOverhead() async throws {
+        let s = try await TailnetFixture()
+        defer { Task { await s.server.stop() } }
+        let pack = manySmallFilesPack()
+        let wire = Int64(pack.count)
+        let folder = "/drops?kind=folder&name=many&from=aria"
+
+        s.free.withLock { $0 = (1 << 30) + (2 << 20) } // 2× the wire bytes fit; the entries' blocks don't
+        #expect(try await s.send("POST", folder, body: pack).status == 507)
+        #expect(s.stagingEntries().isEmpty)
+
+        let overhead = Int64(DropPack.maxEntries) * TailnetServer.entryOverheadBytes
+        s.free.withLock { $0 = (1 << 30) + 2 * wire + overhead + 4096 }
+        #expect(try await s.send("POST", folder, body: pack).status == 201)
+    }
+
+    /// The per-entry overhead counts in the cross-upload total, not just per request.
+    @Test func overlappingFolderReservationsIncludeEntryOverhead() async throws {
+        let s = try await TailnetFixture()
+        defer { Task { await s.server.stop() } }
+        let pack = rawPack([(UInt8(ascii: "f"), "a.txt", Data("hi".utf8)), (UInt8(ascii: "e"), "", nil)])
+        let needed = 2 * Int64(pack.count) + Int64(DropPack.maxEntries) * TailnetServer.entryOverheadBytes
+        s.free.withLock { $0 = (1 << 30) + needed + 4096 } // room for one reservation, not two
+
+        let first = try await rawHTTPConnection(port: s.port)
+        defer { first.close() }
+        try await first.send(s.request("POST", "/drops?kind=folder&name=one&from=aria",
+                                       headers: ["Content-Length: \(pack.count)"]))
+        try await first.send(pack.prefix(10))
+        #expect(await eventually { s.stagingEntries().count == 1 })
+
+        let second = try await s.send("POST", "/drops?kind=folder&name=two&from=aria", body: pack)
+        #expect(second.status == 507)
+
+        try await first.send(pack.dropFirst(10))
+        #expect(RawResponse(await first.readToEnd()).status == 201)
+        #expect(try await s.send("POST", "/drops?kind=folder&name=three&from=aria", body: pack).status == 201)
     }
 
     /// Headers and the first chunk of a chunked upload, then nothing.

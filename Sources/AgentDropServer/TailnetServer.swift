@@ -27,6 +27,9 @@ public final class TailnetServer: Sendable {
         }
     }
 
+    /// Disk an unpacked folder entry takes beyond its bytes: one APFS block (4 KiB) each.
+    public static let entryOverheadBytes: Int64 = 4096
+
     public let port: Int
     private let running: BoundServer
 
@@ -218,14 +221,19 @@ struct TailnetReceiver: Sendable {
         let declared = request.headers[.contentLength].flatMap { Int64($0) }
         if let declared, declared > limits.maxBytes { throw tooLarge }
         // Without a length the body may grow to the cap. A folder holds the pack and its
-        // unpacked tree at once: count it twice. Uploads in flight have reserved theirs.
-        // An overflowing product can't fit: refuse it (507) rather than trap.
+        // unpacked tree at once: count it twice, plus a block per entry, since a tiny file
+        // takes far more disk than its wire bytes. Uploads in flight have reserved theirs.
+        // An overflowing sum can't fit: refuse it (507) rather than trap.
+        let isFolder = upload.kind == .folder
         let (product, productOverflow) = (declared ?? limits.maxBytes)
-            .multipliedReportingOverflow(by: upload.kind == .folder ? 2 : 1)
-        let needed = productOverflow ? Int64.max : product
+            .multipliedReportingOverflow(by: isFolder ? 2 : 1)
+        let (sum, sumOverflow) = product.addingReportingOverflow(
+            isFolder ? Int64(DropPack.maxEntries) * TailnetServer.entryOverheadBytes : 0)
+        let overflow = productOverflow || sumOverflow
+        let needed = overflow ? Int64.max : sum
         let free = freeBytes(store.folder)
         let minFree = limits.minFreeBytes
-        guard !productOverflow, slots.reserve(needed, if: { total in
+        guard !overflow, slots.reserve(needed, if: { total in
             free.map { value in
                 let (remaining, overflow) = value.subtractingReportingOverflow(total)
                 return !overflow && remaining >= minFree
