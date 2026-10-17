@@ -16,6 +16,8 @@ final class TestEnv: @unchecked Sendable {
     var launchApp: @Sendable () throws -> Void = { throw AgentDropError.invalid("no app in tests") }
     var isProcessAlive: @Sendable (Int32) -> Bool = { pid in pid > 0 && (kill(pid, 0) == 0 || errno == EPERM) }
     var serverWait: Duration = .seconds(3)
+    /// What `CLIContext.environment` returns (e.g. `AGENT_DROP_REMOTE_URL`).
+    var environment: [String: String] = [:]
     let clock = Date(timeIntervalSince1970: 1_760_208_240)
     private let lock = NSLock()
     private var _processCalls: [(URL, [String])] = []
@@ -51,6 +53,7 @@ final class TestEnv: @unchecked Sendable {
     private func makeContext(out: OutputSink, err: OutputSink) -> CLIContext {
         let stdin = self.stdin, clock = self.clock, code = self.codeExecutable
         let useRealProcess = self.useRealProcess, processError = self.processError
+        let environment = self.environment
         return CLIContext(
             config: config, cwd: cwd, now: { clock }, readStdin: { stdin },
             stdout: out, stderr: err,
@@ -61,7 +64,7 @@ final class TestEnv: @unchecked Sendable {
                 if let processError { throw processError }
                 return 0
             },
-            launchApp: launchApp, isProcessAlive: isProcessAlive, serverWait: serverWait)
+            launchApp: launchApp, isProcessAlive: isProcessAlive, serverWait: serverWait, environment: environment)
     }
 
     @discardableResult
@@ -71,7 +74,7 @@ final class TestEnv: @unchecked Sendable {
         return Result(code: status, out: out.text, err: err.text, outData: out.data)
     }
 
-    /// For `drop watch`. `out` can be read while the command is still running.
+    /// For `drop watch` and `drop add --to`. `out` can be read while the command is still running.
     func runAsync(_ arguments: [String], out: OutputSink = OutputSink()) async -> Result {
         let err = OutputSink()
         let status = await DropCLI.runAsync(arguments, context: makeContext(out: out, err: err))

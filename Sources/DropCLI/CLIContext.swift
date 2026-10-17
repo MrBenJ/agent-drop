@@ -39,6 +39,8 @@ public struct CLIContext: Sendable {
     public var isProcessAlive: @Sendable (Int32) -> Bool
     /// How long `drop watch` waits for the app's server (spec: 10 s).
     public var serverWait: Duration
+    /// Process environment (`drop add --to env` reads `AGENT_DROP_REMOTE_URL` / `_KEY`).
+    public var environment: [String: String]
 
     public init(config: ConfigStore, cwd: URL, now: @escaping @Sendable () -> Date,
                 readStdin: @escaping @Sendable () -> Data, stdout: OutputSink, stderr: OutputSink,
@@ -48,7 +50,7 @@ public struct CLIContext: Sendable {
                     throw AgentDropError.invalid("Launching Agent Drop isn't available here")
                 },
                 isProcessAlive: @escaping @Sendable (Int32) -> Bool = ServerInfo.isProcessAlive,
-                serverWait: Duration = .seconds(10)) {
+                serverWait: Duration = .seconds(10), environment: [String: String] = [:]) {
         self.config = config
         self.cwd = cwd
         self.now = now
@@ -60,6 +62,7 @@ public struct CLIContext: Sendable {
         self.launchApp = launchApp
         self.isProcessAlive = isProcessAlive
         self.serverWait = serverWait
+        self.environment = environment
     }
 
     /// AgentDrop.app's bundle identifier (App/Info.plist).
@@ -113,7 +116,8 @@ public struct CLIContext: Sendable {
                 } catch let error as AgentDropError {
                     throw AgentDropError.invalid("Couldn't launch Agent Drop. Is AgentDrop.app installed? (\(error.message))")
                 }
-            })
+            },
+            environment: ProcessInfo.processInfo.environment)
     }
 
     /// `~`, relative-to-cwd, and trailing-slash handling for user-supplied paths.

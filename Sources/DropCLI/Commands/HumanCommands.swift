@@ -49,6 +49,8 @@ struct AgentInstructions: ParsableCommand {
 
         If you can't finish, run `drop release <id>` so someone else can claim it.
 
+        **Another Mac on your tailnet.** If `drop remote list` shows a remote, `drop add <path> --to <remote> --from "<identity>" -m "…"` sends the drop to that Mac's Agent Drop instead of this one. Fire-and-forget: you get the id back; you can't read, claim or watch it from here.
+
         Every command accepts `--json` (except `drop cat` and `drop latest --cat`, which print raw contents). Exit codes: 0 ok, 1 error, 2 not found, 3 conflict. If a command fails with "store busy, retry", another writer held the store for more than 5 seconds: wait a moment and run it again.
         """
 

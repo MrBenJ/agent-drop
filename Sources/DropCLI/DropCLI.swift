@@ -4,12 +4,17 @@ import Foundation
 
 public enum DropCLI {
     /// Parses and runs one invocation; returns the process exit code (spec §4 Global rules).
-    /// Synchronous commands only (`drop watch` needs `runAsync`).
+    /// Synchronous commands, plus `SyncRunnable` ones (`drop watch`, `drop remote test` and
+    /// `drop add --to` need `runAsync`).
     public static func run(_ arguments: [String], context: CLIContext) -> Int32 {
         let wantsJSON = arguments.contains("--json")
         return CLIContext.$current.withValue(context) {
             do {
                 var command = try DropCommand.parseAsRoot(arguments)
+                if let syncCommand = command as? SyncRunnable {
+                    try syncCommand.runSync()
+                    return 0
+                }
                 guard !(command is AsyncParsableCommand) else {
                     throw AgentDropError.invalid("\(arguments.first ?? "this command") needs DropCLI.runAsync")
                 }
@@ -21,7 +26,7 @@ public enum DropCLI {
         }
     }
 
-    /// What `main.swift` calls: runs every command, including `drop watch`.
+    /// What `main.swift` calls: runs every command, including the async ones.
     public static func runAsync(_ arguments: [String], context: CLIContext) async -> Int32 {
         let wantsJSON = arguments.contains("--json")
         return await CLIContext.$current.withValue(context) {
@@ -73,7 +78,7 @@ struct DropCommand: ParsableCommand {
         version: "0.1.1",
         subcommands: [Add.self, Edit.self, Archive.self, ListCommand.self, Show.self, Cat.self, PathCommand.self,
                       Latest.self, Inbox.self, Claim.self, Release.self, Done.self, Reopen.self, Open.self, Code.self,
-                      Watch.self, Where.self, Config.self, AgentInstructions.self]
+                      Watch.self, Where.self, Config.self, RemoteCommand.self, AgentInstructions.self]
     )
 }
 
