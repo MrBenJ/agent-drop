@@ -81,10 +81,14 @@ stray request from some other tailnet service, and gives Ben a switch to revoke 
   untouched.
 - **There's no port fallback.** Senders hard-code the port, so if it's taken, show the
   error in Settings rather than moving.
-- That listener has exactly one route: `POST /drops`. Every other path, including the
-  v0.1 GET routes, returns 404. Reads stay on loopback (anti-goal §2).
-- Finding the Tailscale address: any local interface address in `100.64.0.0/10`
-  (IPv4), and optionally `fd7a:115c:a1e0::/48` (IPv6). The MagicDNS name comes from
+- That listener has exactly one data route: `POST /drops`, plus a data-free `POST /ping`
+  for `drop remote test` (§5.2). Every other path, including the v0.1 GET routes,
+  returns 404. Reads stay on loopback (anti-goal §2).
+- Finding the Tailscale address: an IPv4 address in `100.64.0.0/10` on a `utun*`
+  interface, which must also appear in `Self.TailscaleIPs` whenever `tailscale status
+  --json` answers. Other interfaces are never used: that range is also carrier-grade NAT,
+  so a Wi-Fi or LAN address can fall inside it (revised during the v0.2.0 build). IPv6
+  is out of scope for v0.2.0. The MagicDNS name comes from
   `tailscale status --json` when the CLI is present. Without it, only IP-addressed Host
   headers are accepted.
 - The service must cope with Tailscale coming up after the app, or the address changing.
