@@ -35,6 +35,10 @@ public final class AppModel {
     public private(set) var phase: Phase = .starting
     public private(set) var config = AgentDropConfig()
     public private(set) var serverState: AgentDropService.State = .stopped
+    /// Settings → Tailnet's status line.
+    public private(set) var tailnetState: TailnetState = .off
+    /// The tailnet toggle or **Regenerate key** failed; nil after the next success.
+    public private(set) var tailnetError: String?
     /// Why config.json can't be read right now; nil once it can.
     public private(set) var configError: String?
     public let library: LibraryModel
@@ -56,6 +60,7 @@ public final class AppModel {
     @ObservationIgnored private let service: AgentDropService
     @ObservationIgnored private let changes: AsyncStream<Void>.Continuation
     @ObservationIgnored private var changeTask: Task<Void, Never>?
+    @ObservationIgnored private var tailnetTask: Task<Void, Never>?
     @ObservationIgnored private var configWatcher: FolderWatcher?
     /// The folder settings the service last started (or refused to start) with.
     @ObservationIgnored private var applied: Applied?
@@ -65,6 +70,8 @@ public final class AppModel {
         var folder: String
         var needsConfirmation: Bool
         var port: Int?
+        var tailnetPort: Int?
+        var tailnetMaxBytes: Int64?
     }
 
     public init(configStore: ConfigStore, loginItem: LoginItemControlling, settings: AppSettings,
@@ -78,6 +85,14 @@ public final class AppModel {
         changes = continuation
         var options = serviceOptions
         options.onChange = { continuation.yield() }
+        // Tailnet states reach the main actor in order; only the newest pending one matters.
+        let (tailnetStream, tailnetContinuation) = AsyncStream<TailnetState>.makeStream(
+            bufferingPolicy: .bufferingNewest(1))
+        let callerOnTailnetChange = serviceOptions.onTailnetChange
+        options.onTailnetChange = { state in
+            callerOnTailnetChange(state)
+            tailnetContinuation.yield(state)
+        }
         service = AgentDropService(config: configStore, options: options)
         let library = self.library
         library.afterReload = { [notifier, weak library, weak poster] store in
@@ -88,6 +103,14 @@ public final class AppModel {
         changeTask = Task { @MainActor in
             for await _ in stream { await library.reload() }
         }
+        tailnetTask = Task { @MainActor [weak self] in
+            for await state in tailnetStream { self?.tailnetState = state }
+        }
+        // The toggle as last left, before any start: a launch with it on resumes receiving.
+        // It heads the lifecycle queue, so `launch()` starts the service only after it.
+        let service = service
+        let receive = settings.receiveFromTailnet
+        lastOperation = Task { @MainActor in _ = await service.setTailnet(enabled: receive) }
     }
 
     public var folder: URL { configStore.folderURL(config) }
@@ -139,6 +162,7 @@ public final class AppModel {
             model.serverState = .stopped
             model.changeTask?.cancel()
             model.changes.finish()
+            model.tailnetTask?.cancel()
         }
     }
 
@@ -233,6 +257,46 @@ public final class AppModel {
         }
     }
 
+    // MARK: Tailnet
+
+    /// Settings → Tailnet "Receive drops from my tailnet". Turning it on creates the sender
+    /// key first; if that fails the toggle stays off and `tailnetError` says why.
+    public func setReceiveFromTailnet(_ on: Bool) async {
+        await serially { model in
+            if on {
+                do {
+                    _ = try model.tailnetKeyFile.create()
+                } catch {
+                    model.tailnetError = "Couldn't turn on receiving: \(LibraryModel.message(error))"
+                    model.settings.receiveFromTailnet = false
+                    return
+                }
+            }
+            model.tailnetError = nil
+            model.settings.receiveFromTailnet = on
+            model.tailnetState = await model.service.setTailnet(enabled: on)
+        }
+    }
+
+    /// Settings → Tailnet **Regenerate key**. Senders need the new setup command.
+    public func regenerateTailnetKey() {
+        do {
+            _ = try tailnetKeyFile.regenerate()
+            tailnetError = nil
+        } catch {
+            tailnetError = "Couldn't regenerate the key: \(LibraryModel.message(error))"
+        }
+    }
+
+    /// What to run on the sending Mac; nil unless receiving with a key. The key is read
+    /// from disk each time, so a regenerated key shows at once.
+    public var tailnetSetupCommand: String? {
+        guard case .receiving(let host, let port) = tailnetState, let key = tailnetKeyFile.read() else { return nil }
+        return "drop remote add laptop --url http://\(host):\(port) --key \(key)"
+    }
+
+    private var tailnetKeyFile: TailnetKeyFile { TailnetKeyFile(configDir: configStore.configDir) }
+
     /// The **Retry** banner after `noPort`.
     public func retryPort() async {
         serverState = await service.retryPort()
@@ -240,7 +304,8 @@ public final class AppModel {
 
     /// config.json changed (the CLI, Settings, or an editor). A new folder, a change in
     /// whether it needs confirming, or a new port restarts the service; a new retention
-    /// applies to the open store directly.
+    /// applies to the open store directly. So does a new `tailnetPort` or `tailnetMaxBytes`;
+    /// nothing in config.json turns tailnet receiving on.
     public func configDidChange() async {
         await serially { model in
             let readable = model.loadConfig()
@@ -310,7 +375,7 @@ public final class AppModel {
 
     private func appliedKey() -> Applied {
         Applied(folder: folder.standardizedFileURL.path, needsConfirmation: configStore.folderNeedsConfirmation(config),
-                port: config.serverPort)
+                port: config.serverPort, tailnetPort: config.tailnetPort, tailnetMaxBytes: config.tailnetMaxBytes)
     }
 
     /// False (with `configError` set) when config.json can't be read; the last good
