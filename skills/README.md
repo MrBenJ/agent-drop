@@ -11,18 +11,15 @@ Both carry the same instructions: preflight checks, when to drop and when not to
 
 ## Prerequisites
 
-On the sending Mac, install the `drop` CLI (0.2.0 or newer) and register your receiving Mac once. `--key -` reads the key from stdin so it stays out of shell history:
+On the sending Mac, install the `drop` CLI (0.2.0 or newer) and register your receiving Mac once. On the receiving Mac, open Settings → General → Tailnet and click **Copy key**, then on the sending Mac paste it at the `read` prompt (nothing echoes). `--key -` reads the key from stdin, so it stays out of shell history:
 
 ```bash
-pbpaste | drop remote add laptop --url http://<host>:47400 --key -
+read -rs KEY        # paste the key, press Return
+printf '%s' "$KEY" | drop remote add laptop --url http://<host>:47400 --key -; unset KEY
 drop remote test laptop
 ```
 
-Copy the key from the receiving Mac's Settings first, so `pbpaste` supplies it. To type it instead without echoing or recording it:
-
-```bash
-read -rs KEY; printf '%s' "$KEY" | drop remote add laptop --url http://<host>:47400 --key -; unset KEY
-```
+The simple alternative: click **Copy setup command** on the receiving Mac and paste that whole `drop remote add ...` line into the sending Mac's terminal. It puts the key in your shell history.
 
 ## Install
 

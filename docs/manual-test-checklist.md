@@ -73,9 +73,17 @@ Needs a receiver (the laptop) and a sender (a second Mac), both on the same tail
 running `drop` 0.2.0 or newer.
 - [ ] Receiver: Settings → General → Tailnet → switch on **Receive drops from my tailnet**.
       The status line reads "Receiving on <host>:47400".
-- [ ] Receiver: **Copy setup command**. On the sender, run it (or
-      `pbpaste | drop remote add laptop --url http://<host>:47400 --key -`), then
+- [ ] Receiver: **Copy setup command** and **Copy key** both show while receiving; the first
+      copies the whole `drop remote add laptop --url … --key <hex>` line, the second just
+      the 64-character key.
+- [ ] On the sender, register with the copied key: `read -rs KEY` (paste it; nothing
+      echoes), then
+      `printf '%s' "$KEY" | drop remote add laptop --url http://<host>:47400 --key -; unset KEY`
+      (or paste the copied setup command, which records the key in shell history). Then
       `drop remote test laptop`: it says the remote is reachable and accepted the key.
+- [ ] Receiver: move `~/Library/Application Support/AgentDrop/tailnet.json` aside, click
+      **Copy key**: the red line reads "No sender key — click Regenerate key."
+      **Regenerate key** clears it.
 - [ ] Sender: `drop add file.md --to laptop --from "sender"`. The receiver shows the drop
       and a notification.
 - [ ] Sender: `drop add some-folder --to laptop --from "sender"`: same, folder intact.

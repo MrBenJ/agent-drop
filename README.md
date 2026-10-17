@@ -118,18 +118,24 @@ your laptop, over [Tailscale](https://tailscale.com). It is off until you turn i
 **On the receiving Mac:** open Agent Drop → Settings → General → **Tailnet** and switch on
 **Receive drops from my tailnet**. The status line under it says what is going on:
 "Receiving on <host>:<port>", "Tailscale not connected", "Port N is in use", "Starts when
-Agent Drop is serving", or "Off". Click **Copy setup command** to get a line like
-`drop remote add laptop --url http://<host>:47400 --key <key>`. **Regenerate key** makes a
-new key; every sender using the old one stops working until you give it the new one.
+Agent Drop is serving", or "Off". While receiving, **Copy setup command** copies a whole
+line like `drop remote add laptop --url http://<host>:47400 --key <key>`, and **Copy key**
+copies just the key. **Regenerate key** makes a new key; every sender using the old one
+stops working until you give it the new one.
 
 **On the sending Mac:** install the `drop` CLI (0.2.0 or newer), then register the receiver
-once. Piping the key keeps it out of your shell history. Copy it in Settings first, then:
+once. The history-safe way: click **Copy key** on the receiver, get the key to the sending
+Mac, and paste it at the `read` prompt (nothing echoes):
 
 ```bash
-pbpaste | drop remote add laptop --url http://<host>:47400 --key -
+read -rs KEY        # paste the key, press Return
+printf '%s' "$KEY" | drop remote add laptop --url http://<host>:47400 --key -; unset KEY
 drop remote test laptop                       # reachable, and the key is accepted
 drop add plan.md --to laptop --from "mini-agent" -m "Plan for the auth refactor"
 ```
+
+The simple alternative is to paste the line from **Copy setup command** into the sending
+Mac's terminal. That works too, but it puts the key in your shell history.
 
 `drop add --to <remote>` works with files, folders and `-` (stdin, with `--name`). It is
 fire-and-forget: the drop is saved on the receiving Mac and its app notifies you. The
