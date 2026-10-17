@@ -29,12 +29,32 @@ struct TailnetClientTests {
         var meta = metadata()
         meta.project = "courses-app"
         meta.handoff = true
-        let body = try json(try await client(s).send(.file(file), meta))
+        // Its own temp dir: the shared one can hold other tests' snapshots mid-send.
+        let temp = s.store.dir.url.appendingPathComponent("tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let body = try json(try await client(s, temporaryDirectory: temp).send(.file(file), meta))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: temp.path).isEmpty)
         #expect(body["filename"] == .string("report.md"))
         #expect(body["project"] == .string("courses-app"))
         #expect(body["kind"] == .string("handoff"))
         let drop = try #require(try s.store.store.list(ListFilter()).first)
         #expect(try String(contentsOf: s.store.store.path(of: drop), encoding: .utf8) == "# Report\n")
+    }
+
+    @Test func refusesAFileThatIsASymlink() async throws {
+        let s = try await TailnetFixture(identity: loopbackIdentity)
+        defer { Task { await s.server.stop() } }
+        let secret = s.store.dir.url.appendingPathComponent("secret.txt")
+        try Data("TOP-SECRET".utf8).write(to: secret)
+        let link = s.store.dir.url.appendingPathComponent("report.md")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: secret)
+        let temp = s.store.dir.url.appendingPathComponent("tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        await #expect(throws: AgentDropError.invalid("report.md is not a regular file")) {
+            _ = try await client(s, temporaryDirectory: temp).send(.file(link), metadata())
+        }
+        #expect(try s.store.store.list(ListFilter()).isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: temp.path).isEmpty)
     }
 
     @Test func sendsAFolder() async throws {

@@ -44,7 +44,7 @@ public struct TailnetClient: Sendable {
     private let remoteName: String
     private let remote: Remote
     private let session: URLSession
-    /// Where a folder's pack is written while it uploads (removed afterwards).
+    /// Where a folder's pack or a file's snapshot is written while it uploads (removed afterwards).
     private let temporaryDirectory: URL
 
     public init(remoteName: String, remote: Remote, session: URLSession = .shared,
@@ -61,7 +61,11 @@ public struct TailnetClient: Sendable {
         request.timeoutInterval = Self.timeout
         switch payload {
         case .file(let file):
-            return try await perform { try await session.upload(for: request, fromFile: file) }
+            // Upload a private copy read through a no-follow descriptor: uploading `file` itself would
+            // reopen the path and follow a symlink swapped in after the caller checked it.
+            let snapshot = try PinnedFile.snapshot(of: file, into: temporaryDirectory)
+            defer { try? FileManager.default.removeItem(at: snapshot.deletingLastPathComponent()) }
+            return try await perform { try await session.upload(for: request, fromFile: snapshot) }
         case .folder(let folder):
             let pack = temporaryDirectory.appendingPathComponent("agentdrop-\(UUID().uuidString).adpk")
             defer { try? FileManager.default.removeItem(at: pack) }

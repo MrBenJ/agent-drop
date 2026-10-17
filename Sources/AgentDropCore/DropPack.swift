@@ -109,7 +109,7 @@ public enum DropPack {
     }
 
     /// Copies exactly `count` bytes from `fd`; a file that shrinks or grows meanwhile is refused.
-    private static func copy(_ fd: Int32, path: String, count: UInt64, to out: FileHandle) throws {
+    static func copy(_ fd: Int32, path: String, count: UInt64, to out: FileHandle) throws {
         let changed = AgentDropError.invalid("\(path) changed while it was being read")
         var buffer = [UInt8](repeating: 0, count: chunk)
         var remaining = count
