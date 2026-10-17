@@ -108,12 +108,13 @@ struct TailnetAccessMiddleware: RouterMiddleware {
     }
 }
 
-/// Counts uploads in progress. A lock rather than an actor, so `release()` can run from a
-/// `defer` (which can't `await`).
+/// Counts uploads in progress and the disk space they've reserved. A lock rather than an
+/// actor, so `release(reserved:)` can run from a `defer` (which can't `await`).
 final class UploadSlots: @unchecked Sendable {
     private let limit: Int
     private let lock = NSLock()
     private var count = 0
+    private var reservedBytes: Int64 = 0
 
     init(limit: Int) {
         self.limit = limit
@@ -127,8 +128,21 @@ final class UploadSlots: @unchecked Sendable {
         }
     }
 
-    func release() {
-        lock.withLock { count -= 1 }
+    /// Reserves `bytes` if `fits` accepts the total reserved with them included.
+    func reserve(_ bytes: Int64, if fits: (Int64) -> Bool) -> Bool {
+        lock.withLock {
+            guard fits(reservedBytes + bytes) else { return false }
+            reservedBytes += bytes
+            return true
+        }
+    }
+
+    /// Frees a claimed slot and the bytes it reserved (0 if it reserved none).
+    func release(reserved bytes: Int64) {
+        lock.withLock {
+            count -= 1
+            reservedBytes -= bytes
+        }
     }
 }
 
@@ -192,16 +206,21 @@ struct TailnetReceiver: Sendable {
         guard slots.claim() else {
             throw APIError(.serviceUnavailable, "Agent Drop is busy receiving; retry shortly")
         }
-        defer { slots.release() }
+        var reserved: Int64 = 0
+        defer { slots.release(reserved: reserved) }
 
         let declared = request.headers[.contentLength].flatMap { Int64($0) }
         if let declared, declared > limits.maxBytes { throw tooLarge }
-        // A folder holds the pack and its unpacked tree at once: count it twice.
-        let needed = (declared ?? 0) * (upload.kind == .folder ? 2 : 1)
-        if let free = freeBytes(store.folder), free - needed < limits.minFreeBytes {
+        // Without a length the body may grow to the cap. A folder holds the pack and its
+        // unpacked tree at once: count it twice. Uploads in flight have reserved theirs.
+        let needed = (declared ?? limits.maxBytes) * (upload.kind == .folder ? 2 : 1)
+        let free = freeBytes(store.folder)
+        let minFree = limits.minFreeBytes
+        guard slots.reserve(needed, if: { total in free.map { $0 - total >= minFree } ?? true }) else {
             throw APIError(HTTPResponse.Status(code: 507, reasonPhrase: "Insufficient Storage"),
                            "Not enough free disk space on the receiving Mac")
         }
+        reserved = needed
 
         let staging = try store.makeStagingDirectory()
         // Runs on every exit, including a dropped connection (the body stream throws) and

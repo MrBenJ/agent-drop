@@ -269,6 +269,44 @@ struct TailnetUploadTests {
         #expect(try await s.send("POST", fileDrop, body: Data(repeating: 0x61, count: 100)).status == 201)
     }
 
+    /// No Content-Length: the upload may still grow to the cap, so it reserves the cap.
+    @Test func chunkedUploadReservesTheCap() async throws {
+        let s = try await TailnetFixture()
+        defer { Task { await s.server.stop() } }
+        s.free.withLock { $0 = (1 << 30) + 10 }
+        var request = s.request("POST", fileDrop, headers: ["Transfer-Encoding: chunked"])
+        request += Data("5\r\nhello\r\n0\r\n\r\n".utf8)
+        let response = RawResponse(try await rawHTTP(port: s.port, request))
+        #expect(response.status == 507)
+        #expect(s.stagingEntries().isEmpty)
+        #expect(try s.store.store.list(ListFilter()).isEmpty)
+    }
+
+    /// Concurrent uploads can't each pass against the same free space.
+    @Test func overlappingUploadsShareTheFreeSpace() async throws {
+        let s = try await TailnetFixture()
+        defer { Task { await s.server.stop() } }
+        s.free.withLock { $0 = (1 << 30) + 150 } // room for one 100-byte upload, not two
+        let first = try await rawHTTPConnection(port: s.port)
+        defer { first.close() }
+        try await first.send(s.request("POST", "/drops?kind=file&name=one.txt&from=aria",
+                                       headers: ["Content-Length: 100"]))
+        try await first.send(Data(repeating: 0x61, count: 50))
+        #expect(await eventually { s.stagingEntries().count == 1 })
+
+        let second = try await s.send("POST", "/drops?kind=file&name=two.txt&from=aria",
+                                      body: Data(repeating: 0x62, count: 100))
+        #expect(second.status == 507)
+
+        try await first.send(Data(repeating: 0x61, count: 50))
+        #expect(RawResponse(await first.readToEnd()).status == 201)
+        // Its reservation went with it.
+        let third = try await s.send("POST", "/drops?kind=file&name=three.txt&from=aria",
+                                     body: Data(repeating: 0x63, count: 100))
+        #expect(third.status == 201)
+        #expect(try s.store.store.list(ListFilter()).map(\.filename).sorted() == ["one.txt", "three.txt"])
+    }
+
     /// A 500's raw error text can name receiver paths; senders get a generic message.
     @Test func internalErrorsDoNotLeakDetails() async throws {
         let s = try await TailnetFixture()
