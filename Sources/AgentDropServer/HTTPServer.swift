@@ -2,6 +2,7 @@ import AgentDropCore
 import Foundation
 import Hummingbird
 import Logging
+import NIOCore
 import ServiceLifecycle
 
 /// The local HTTP + SSE server (spec §5.2, §5.3): 127.0.0.1 only, bearer token, `Host` allowlist.
@@ -67,14 +68,18 @@ struct BoundServer: Sendable {
 
 /// The running server, or nil if the port couldn't be bound. The first value on
 /// `outcome` decides: `true` once the server listens, `false` if `run()` ended first.
-func bindServer<Context: RequestContext>(_ router: Router<Context>, host: String,
-                                         port: Int, reuseAddress: Bool = false) async -> BoundServer?
+/// `idleTimeout` closes a connection that reads nothing for that long, including in the
+/// middle of a request body (Hummingbird's HTTP/1 idle handler); nil never does.
+func bindServer<Context: RequestContext>(_ router: Router<Context>, host: String, port: Int,
+                                         reuseAddress: Bool = false,
+                                         idleTimeout: Duration? = nil) async -> BoundServer?
 where Context.Source == ApplicationRequestContextSource {
     let (outcome, continuation) = AsyncStream<Bool>.makeStream()
     var logger = Logger(label: "AgentDropServer")
     logger.logLevel = .warning
     let app = Application(
         router: router,
+        server: .http1(configuration: .init(idleTimeout: idleTimeout.map { TimeAmount($0) })),
         configuration: .init(address: .hostname(host, port: port), serverName: nil, reuseAddress: reuseAddress),
         onServerRunning: { _ in continuation.yield(true) },
         logger: logger)

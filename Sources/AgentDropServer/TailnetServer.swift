@@ -18,6 +18,9 @@ public final class TailnetServer: Sendable {
         public var maxInFlight = 2
         /// Free space the volume must keep after the upload.
         public var minFreeBytes: Int64 = 1 << 30
+        /// A connection that sends nothing for this long, even mid-body, is closed: the
+        /// upload fails and its slot, reservation and staging directory are freed.
+        public var bodyIdleTimeout: Duration = .seconds(30)
 
         public init(maxBytes: Int64) {
             self.maxBytes = maxBytes
@@ -52,7 +55,8 @@ public final class TailnetServer: Sendable {
         router.post("/drops") { request, _ in try await receiver.receive(request) }
         // Anything else (an unknown path, or a known one with another method) reaches
         // Hummingbird's not-found responder, which ErrorMiddleware turns into 404 JSON.
-        guard let running = await bindServer(router, host: bindHost, port: port, reuseAddress: true) else {
+        guard let running = await bindServer(router, host: bindHost, port: port, reuseAddress: true,
+                                             idleTimeout: limits.bodyIdleTimeout) else {
             throw PortInUse(port: port)
         }
         return TailnetServer(port: port, running: running)

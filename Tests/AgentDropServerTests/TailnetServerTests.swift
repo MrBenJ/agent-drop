@@ -396,6 +396,25 @@ struct TailnetUploadTests {
         #expect(try s.store.store.list(ListFilter()).map(\.filename) == ["three.txt"])
     }
 
+    /// Senders that go quiet mid-body lose their slots after the idle timeout.
+    @Test func stalledUploadsTimeOutAndFreeTheirSlots() async throws {
+        let s = try await TailnetFixture(bodyIdleTimeout: .milliseconds(500))
+        defer { Task { await s.server.stop() } }
+        let first = try await stalledUpload(s, name: "one.txt")
+        let second = try await stalledUpload(s, name: "two.txt")
+        defer { first.close(); second.close() }
+        #expect(await eventually { s.stagingEntries().count == 2 })
+
+        let succeeded = await eventually(timeout: .seconds(3)) {
+            let response = try? await s.send("POST", "/drops?kind=file&name=three.txt&from=aria",
+                                             body: Data("x".utf8))
+            return response?.status == 201
+        }
+        #expect(succeeded)
+        #expect(await eventually(timeout: .seconds(2)) { s.stagingEntries().isEmpty })
+        #expect(try s.store.store.list(ListFilter()).map(\.filename) == ["three.txt"])
+    }
+
     /// A sender that never finishes its body can't hold shutdown up past the 2 s grace.
     @Test func stopDoesNotWaitForAStalledUpload() async throws {
         let s = try await TailnetFixture()
