@@ -132,6 +132,22 @@ struct TailnetServiceTests {
         #expect(try await f.send("POST", "/ping").status == 403)
     }
 
+    @Test func aMissingNameAtTheSameAddressKeepsTheListener() async throws {
+        let f = try TailnetServiceFixture()
+        _ = try await f.service.start()
+        defer { Task { await f.service.stop() } }
+        #expect(await f.service.setTailnet(enabled: true) == f.receiving)
+        // `tailscale status` failing now and then: the name comes and goes, the address stays.
+        let nameless = TailnetIdentity(address: TailnetFixture.identity.address, dnsName: nil)
+        for located in [nameless, TailnetFixture.identity, nameless] {
+            f.identity.withLock { $0 = located }
+            try await Task.sleep(for: .milliseconds(350))
+            #expect(await f.service.tailnetState == f.receiving)
+            #expect(try await f.send("POST", "/ping").status == 204)
+        }
+        #expect(f.states.value == [f.receiving])
+    }
+
     @Test func portInUseIsReported() async throws {
         let f = try TailnetServiceFixture()
         let blocker = try await TailnetServer.start(

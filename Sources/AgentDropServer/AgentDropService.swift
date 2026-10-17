@@ -234,7 +234,9 @@ public actor AgentDropService {
     private func refreshTailnet() async {
         guard tailnetEnabled, let store else { return }
         let identity = await options.tailnetLocator.locate()
-        if tailnetServer != nil, identity == tailnetIdentity { return }
+        if tailnetServer != nil, let bound = tailnetIdentity, let identity, Self.sameTailnet(identity, as: bound) {
+            return
+        }
         await stopTailnetListener()
         guard let identity else {
             setTailnetState(.notConnected)
@@ -267,12 +269,19 @@ public actor AgentDropService {
             switch await options.tailnetLocator.locate() {
             case nil:
                 setTailnetState(.notConnected)
-            case let now? where now != identity:
+            case let now? where !Self.sameTailnet(now, as: identity):
                 await bindTailnet(store: store, identity: now, recheck: false)
             default:
                 setTailnetState(.portInUse(port))
             }
         }
+    }
+
+    /// Whether `located` calls for no new listener over one for `bound`. The name comes from
+    /// `tailscale status`, which can fail on its own, so a missing name at the same address
+    /// is not a change: rebinding then would cut uploads and refuse MagicDNS `Host`s.
+    private static func sameTailnet(_ located: TailnetIdentity, as bound: TailnetIdentity) -> Bool {
+        located.address == bound.address && (located.dnsName == nil || located.dnsName == bound.dnsName)
     }
 
     private func stopTailnetListener() async {
