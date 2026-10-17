@@ -14,8 +14,14 @@ Both carry the same instructions: preflight checks, when to drop and when not to
 On the sending Mac, install the `drop` CLI (0.2.0 or newer) and register your receiving Mac once. `--key -` reads the key from stdin so it stays out of shell history:
 
 ```bash
-echo "<key from the receiving Mac's Settings>" | drop remote add laptop --url http://<host>:47400 --key -
+pbpaste | drop remote add laptop --url http://<host>:47400 --key -
 drop remote test laptop
+```
+
+Copy the key from the receiving Mac's Settings first, so `pbpaste` supplies it. To type it instead without echoing or recording it:
+
+```bash
+read -rs KEY; printf '%s' "$KEY" | drop remote add laptop --url http://<host>:47400 --key -; unset KEY
 ```
 
 ## Install
