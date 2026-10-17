@@ -44,7 +44,8 @@ public final class TailnetServer: Sendable {
         let router = Router(context: TailnetRequestContext.self)
         // Outermost first, for every request including unknown routes: errors become
         // JSON, then the peer address, Host, and key are checked.
-        router.add(middleware: ErrorMiddleware<TailnetRequestContext>())
+        router.add(middleware: ErrorMiddleware<TailnetRequestContext>(
+            internalErrorMessage: "Internal error on the receiving Mac"))
         router.add(middleware: TailnetAccessMiddleware(allowedHosts: identity.allowedHosts(port: port),
                                                        key: key, peerAllowed: peerAllowed))
         router.post("/ping") { _, _ in Response(status: .noContent) }

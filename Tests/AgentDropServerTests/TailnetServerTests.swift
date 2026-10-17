@@ -269,6 +269,21 @@ struct TailnetUploadTests {
         #expect(try await s.send("POST", fileDrop, body: Data(repeating: 0x61, count: 100)).status == 201)
     }
 
+    /// A 500's raw error text can name receiver paths; senders get a generic message.
+    @Test func internalErrorsDoNotLeakDetails() async throws {
+        let s = try await TailnetFixture()
+        defer { Task { await s.server.stop() } }
+        // A file where the staging directory belongs: creating a staging dir throws.
+        try? FileManager.default.removeItem(at: s.stagingRoot)
+        try FileManager.default.createDirectory(at: s.stagingRoot.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: s.stagingRoot)
+        let response = try await s.send("POST", fileDrop, body: Data("hi".utf8))
+        #expect(response.status == 500)
+        #expect(response.json["error"] == .string("Internal error on the receiving Mac"))
+        #expect(response.json["status"] == .number(500))
+    }
+
     /// A folder upload holds the pack and its unpacked tree at once, so it needs twice its
     /// declared size free; a file needs it once.
     @Test func folderUploadNeedsTwiceItsSizeFree() async throws {
