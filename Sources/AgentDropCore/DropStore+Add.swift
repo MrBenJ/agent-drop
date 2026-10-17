@@ -214,6 +214,28 @@ extension DropStore {
         return url
     }
 
+    /// Removes `.agentdrop/staging/<uuid>/` directories left by a crash mid-upload: those
+    /// whose own date and every direct child's are older than `age`. A fresh one may
+    /// belong to a `drop add` or upload in progress and is left alone.
+    public func removeStaleStagingDirectories(olderThan age: TimeInterval, now: Date = Date()) {
+        let fm = FileManager.default
+        let root = folder.appendingPathComponent(".agentdrop/staging", isDirectory: true)
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey]
+        guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: keys) else { return }
+        func modified(_ url: URL) -> Date {
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
+        }
+        let cutoff = now.addingTimeInterval(-age)
+        for entry in entries {
+            guard let values = try? entry.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            let children = (try? fm.contentsOfDirectory(at: entry,
+                                                        includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            let newest = ([entry] + children).map(modified).max() ?? now
+            if newest < cutoff { try? fm.removeItem(at: entry) }
+        }
+    }
+
     /// The entry's spelling as stored on disk, which can differ from the requested name
     /// when the filesystem accepts an alias (case or Unicode normalization). Records store
     /// this spelling, so `entryIsPresent` can match it exactly. Distinct hard-linked entries

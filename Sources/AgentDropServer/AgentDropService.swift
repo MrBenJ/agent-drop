@@ -134,6 +134,7 @@ public actor AgentDropService {
         // Spec §3.2: reconcile on launch. A busy store is skipped; the next change to an
         // entry re-checks that drop anyway.
         _ = try? store.reconcile()
+        store.removeStaleStagingDirectories(olderThan: 3600)
         let hub = try EventHub(store: store)
         let onChange = options.onChange
         store.observeEventCommits {

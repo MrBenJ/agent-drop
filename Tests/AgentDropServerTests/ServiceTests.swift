@@ -95,6 +95,31 @@ struct ServiceRunTests {
         #expect(await service.state == .stopped)
     }
 
+    @Test func startRemovesOnlyStaleStagingDirectories() async throws {
+        let f = try ServiceFixture()
+        let staging = f.folder.appendingPathComponent(".agentdrop/staging", isDirectory: true)
+        let fm = FileManager.default
+        let old = staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let fresh = staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        // Old by its own date but with a recently written child: still in use.
+        let busy = staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        for dir in [old, fresh, busy] {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: dir.appendingPathComponent("upload"))
+        }
+        let twoHoursAgo = Date().addingTimeInterval(-2 * 3600)
+        for url in [old, old.appendingPathComponent("upload"), busy] {
+            try fm.setAttributes([.modificationDate: twoHoursAgo], ofItemAtPath: url.path)
+        }
+
+        let service = f.service()
+        try await service.start()
+        #expect(!fm.fileExists(atPath: old.path))
+        #expect(fm.fileExists(atPath: fresh.path))
+        #expect(fm.fileExists(atPath: busy.path))
+        await service.stop()
+    }
+
     @Test func eachStartGetsANewToken() async throws {
         let f = try ServiceFixture()
         let service = f.service()
