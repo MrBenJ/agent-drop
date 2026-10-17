@@ -47,16 +47,30 @@ public struct TailnetLocator: Sendable {
     }
 
     /// The tailnet IPv4 on a `utun` interface (cross-checked against `tailscale status
-    /// --json` when the CLI answers), plus the DNS name from that same status.
+    /// --json` when the CLI answers), plus the DNS name from that same status. The status
+    /// is cached (see `TailscaleStatusCache`), so the service's 10 s poll doesn't spawn
+    /// the CLI each time.
     public static let live = TailnetLocator {
+        let interfaces = interfaceIPv4s()
         let status = await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
             // A GCD thread, not the cooperative pool: the subprocess wait blocks.
-            DispatchQueue.global().async { cont.resume(returning: statusJSON()) }
+            DispatchQueue.global().async {
+                cont.resume(returning: statusCache.status(for: candidates(in: interfaces), now: Date(),
+                                                          fetch: statusJSON))
+            }
         }
-        guard let address = pickAddress(interfaces: interfaceIPv4s(),
+        guard let address = pickAddress(interfaces: interfaces,
                                         tailscaleIPs: status.flatMap(tailscaleIPs(fromStatusJSON:)))
         else { return nil }
         return TailnetIdentity(address: address, dnsName: status.flatMap(dnsName(fromStatusJSON:)))
+    }
+
+    private static let statusCache = TailscaleStatusCache()
+
+    /// The addresses `pickAddress` could choose before the CLI is consulted: tailnet-range
+    /// IPv4s on `utun` interfaces. The status cache is keyed on them.
+    static func candidates(in interfaces: [(name: String, ipv4: String)]) -> [String] {
+        interfaces.filter { $0.name.hasPrefix("utun") && TailnetAccess.isTailnetPeer($0.ipv4) }.map(\.ipv4)
     }
 
     /// The first address in `100.64.0.0/10` on a `utun` interface. That range is also
@@ -107,7 +121,7 @@ public struct TailnetLocator: Sendable {
         return result
     }
 
-    private static let candidates = [
+    private static let cliPaths = [
         "/usr/local/bin/tailscale",
         "/opt/homebrew/bin/tailscale",
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
@@ -115,7 +129,7 @@ public struct TailnetLocator: Sendable {
 
     /// Blocking; call only from a GCD thread. nil on any failure or after 3 s.
     private static func statusJSON() -> Data? {
-        guard let exe = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
+        guard let exe = cliPaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: exe)
         process.arguments = ["status", "--json"]
@@ -141,5 +155,29 @@ public struct TailnetLocator: Sendable {
         }
         readDone.wait()
         return process.terminationStatus == 0 ? output.data : nil
+    }
+}
+
+/// The last `tailscale status --json` answer, reused while the tailnet address candidates
+/// stay the same and the answer is younger than `maxAge`. No candidates means Tailscale
+/// isn't up here, so the CLI isn't run at all. A failed fetch is never cached.
+final class TailscaleStatusCache: @unchecked Sendable {
+    static let maxAge: TimeInterval = 300
+
+    private let lock = NSLock()
+    private var entry: (candidates: [String], status: Data, fetchedAt: Date)?
+
+    /// `fetch` blocks (it runs the CLI), so call this from a GCD thread. The lock isn't
+    /// held while fetching.
+    func status(for candidates: [String], now: Date, fetch: () -> Data?) -> Data? {
+        let key = candidates.sorted()
+        guard !key.isEmpty else { return nil }
+        let cached = lock.withLock { entry }
+        if let cached, cached.candidates == key, now.timeIntervalSince(cached.fetchedAt) < Self.maxAge {
+            return cached.status
+        }
+        guard let fresh = fetch() else { return nil }
+        lock.withLock { entry = (key, fresh, now) }
+        return fresh
     }
 }

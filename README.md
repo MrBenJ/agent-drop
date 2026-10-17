@@ -16,7 +16,7 @@ silicon and Intel) and needs macOS 14+. Its `INSTALL.txt` has the steps:
 
 ```bash
 cp -R AgentDrop.app /Applications/
-cp drop /usr/local/bin/drop          # or any directory on your PATH
+rm -f /usr/local/bin/drop; cp drop /usr/local/bin/drop   # or any directory on your PATH
 xattr -dr com.apple.quarantine /Applications/AgentDrop.app /usr/local/bin/drop
 open /Applications/AgentDrop.app
 ```
@@ -32,7 +32,7 @@ Requires macOS 14+ and Xcode 26+ (Swift 6.2+).
 git clone https://github.com/MrBenJ/agent-drop.git
 cd agent-drop
 swift build -c release --product drop
-cp .build/release/drop /usr/local/bin/drop   # or anywhere on your PATH
+rm -f /usr/local/bin/drop; cp .build/release/drop /usr/local/bin/drop   # or anywhere on your PATH
 
 Scripts/build-app.sh                          # builds .build/AgentDrop.app
 cp -R .build/AgentDrop.app /Applications/
