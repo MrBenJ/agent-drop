@@ -88,11 +88,8 @@ struct GeneralSettings: View {
             LabeledContent("Status") { Text(tailnetText) }
             if case .receiving = model.tailnetState {
                 HStack {
-                    Button("Copy setup command") {
-                        guard let command = model.tailnetSetupCommand else { return }
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(command, forType: .string)
-                    }
+                    Button("Copy setup command") { copy(model.tailnetSetupCommandToCopy()) }
+                    Button("Copy key") { copy(model.tailnetKeyToCopy()) }
                     Button("Regenerate key") { confirmingRegenerate = true }
                 }
             }
@@ -100,6 +97,12 @@ struct GeneralSettings: View {
                 Text(error).foregroundStyle(.red).font(.callout)
             }
         }
+    }
+
+    private func copy(_ text: String?) {
+        guard let text else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private var tailnetText: String {

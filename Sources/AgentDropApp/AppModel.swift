@@ -295,6 +295,26 @@ public final class AppModel {
         return "drop remote add laptop --url http://\(host):\(port) --key \(key)"
     }
 
+    /// Settings → Tailnet **Copy setup command**: `tailnetSetupCommand`, or nil with
+    /// `tailnetError` set when receiving but the key file is missing or malformed.
+    public func tailnetSetupCommandToCopy() -> String? {
+        reportingMissingKey(tailnetSetupCommand)
+    }
+
+    /// Settings → Tailnet **Copy key**: the sender key, read fresh from disk; nil unless
+    /// receiving, with `tailnetError` set when receiving but the key file is unusable.
+    public func tailnetKeyToCopy() -> String? {
+        guard case .receiving = tailnetState else { return nil }
+        return reportingMissingKey(tailnetKeyFile.read())
+    }
+
+    private func reportingMissingKey(_ value: String?) -> String? {
+        if value == nil, case .receiving = tailnetState {
+            tailnetError = "No sender key — click Regenerate key."
+        }
+        return value
+    }
+
     private var tailnetKeyFile: TailnetKeyFile { TailnetKeyFile(configDir: configStore.configDir) }
 
     /// The **Retry** banner after `noPort`.

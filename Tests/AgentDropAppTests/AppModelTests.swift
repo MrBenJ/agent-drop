@@ -551,6 +551,48 @@ struct AppModelTailnetTests {
         await f.stopAll()
     }
 
+    @Test func copyKeyReadsTheKeyFresh() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let port = try f.useTailnetPort()
+        let model = f.model()
+        #expect(model.tailnetKeyToCopy() == nil) // not receiving: nothing to copy, no error
+        #expect(model.tailnetSetupCommandToCopy() == nil)
+        #expect(model.tailnetError == nil)
+        await model.launch()
+        await model.setReceiveFromTailnet(true)
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == Self.receiving(port) })
+        #expect(model.tailnetKeyToCopy() == f.tailnetKeyFile.read())
+        model.regenerateTailnetKey()
+        let newKey = try #require(f.tailnetKeyFile.read())
+        #expect(model.tailnetKeyToCopy() == newKey)
+        #expect(model.tailnetSetupCommandToCopy() == model.tailnetSetupCommand)
+        #expect(model.tailnetError == nil)
+        await f.stopAll()
+    }
+
+    @Test(arguments: [false, true])
+    func copyingWithoutAKeyFileSaysToRegenerate(malformed: Bool) async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let port = try f.useTailnetPort()
+        let model = f.model()
+        await model.launch()
+        await model.setReceiveFromTailnet(true)
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == Self.receiving(port) })
+        try FileManager.default.removeItem(at: f.tailnetKeyFile.url)
+        if malformed { try Data(#"{"key":"nope"}"#.utf8).write(to: f.tailnetKeyFile.url) }
+
+        #expect(model.tailnetKeyToCopy() == nil)
+        #expect(model.tailnetError == "No sender key — click Regenerate key.")
+        model.regenerateTailnetKey()
+        #expect(model.tailnetError == nil)
+        try FileManager.default.removeItem(at: f.tailnetKeyFile.url)
+        #expect(model.tailnetSetupCommandToCopy() == nil)
+        #expect(model.tailnetError == "No sender key — click Regenerate key.")
+        await f.stopAll()
+    }
+
     @Test func changingTailnetPortInConfigRestarts() async throws {
         let f = try AppFixture()
         try f.finishedSetup()
