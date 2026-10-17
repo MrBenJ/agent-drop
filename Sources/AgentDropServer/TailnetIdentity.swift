@@ -49,7 +49,12 @@ public struct TailnetLocator: Sendable {
     /// The first tailnet IPv4 on any interface, plus the DNS name from `tailscale status --json`.
     public static let live = TailnetLocator {
         guard let address = firstTailnetAddress() else { return nil }
-        let name = await Task.detached { statusJSON().flatMap(dnsName(fromStatusJSON:)) }.value
+        let name = await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+            // A GCD thread, not the cooperative pool: the subprocess wait blocks.
+            DispatchQueue.global().async {
+                cont.resume(returning: statusJSON().flatMap(dnsName(fromStatusJSON:)))
+            }
+        }
         return TailnetIdentity(address: address, dnsName: name)
     }
 
@@ -87,7 +92,7 @@ public struct TailnetLocator: Sendable {
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
     ]
 
-    /// Blocking; call off the cooperative pool. nil on any failure or after 3 s.
+    /// Blocking; call only from a GCD thread. nil on any failure or after 3 s.
     private static func statusJSON() -> Data? {
         guard let exe = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
         let process = Process()
