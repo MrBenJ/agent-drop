@@ -71,14 +71,14 @@ struct BoundServer: Sendable {
 /// The running server, or nil if the port couldn't be bound. The first value on
 /// `outcome` decides: `true` once the server listens, `false` if `run()` ended first.
 func bindServer<Context: RequestContext>(_ router: Router<Context>, host: String,
-                                         port: Int) async -> BoundServer?
+                                         port: Int, reuseAddress: Bool = false) async -> BoundServer?
 where Context.Source == ApplicationRequestContextSource {
     let (outcome, continuation) = AsyncStream<Bool>.makeStream()
     var logger = Logger(label: "AgentDropServer")
     logger.logLevel = .warning
     let app = Application(
         router: router,
-        configuration: .init(address: .hostname(host, port: port), serverName: nil, reuseAddress: false),
+        configuration: .init(address: .hostname(host, port: port), serverName: nil, reuseAddress: reuseAddress),
         onServerRunning: { _ in continuation.yield(true) },
         logger: logger)
     // Our own group (no signal handling), so stop() can shut down gracefully.

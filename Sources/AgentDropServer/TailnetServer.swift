@@ -51,7 +51,7 @@ public final class TailnetServer: Sendable {
         router.post("/drops") { request, _ in try await receiver.receive(request) }
         // Anything else (an unknown path, or a known one with another method) reaches
         // Hummingbird's not-found responder, which ErrorMiddleware turns into 404 JSON.
-        guard let running = await bindServer(router, host: bindHost, port: port) else {
+        guard let running = await bindServer(router, host: bindHost, port: port, reuseAddress: true) else {
             throw PortInUse(port: port)
         }
         return TailnetServer(port: port, running: running)

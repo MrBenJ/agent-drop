@@ -89,9 +89,9 @@ struct TailnetServiceTests {
         #expect(await f.service.setTailnet(enabled: true) == .waiting)
         _ = try await f.service.start()
         #expect(await f.service.tailnetState == f.receiving)
-        // The flag outlives a stop: stopping waits, starting again receives. (No request
-        // before the restart: the server's side of a closed connection sits in TIME_WAIT,
-        // and binds don't set SO_REUSEADDR, so the same port couldn't be bound again yet.)
+        #expect(try await f.send("POST", "/ping").status == 204)
+        // The flag outlives a stop: stopping waits, starting again receives, even right
+        // after traffic left the old listener's side of the connection in TIME_WAIT.
         await f.service.stop()
         #expect(await f.service.tailnetState == .waiting)
         #expect(await f.tailnetRefused())
