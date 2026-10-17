@@ -148,7 +148,7 @@ struct ServiceRunTests {
         defer { Task { await service.stop() } }
         let events = try await f.client().events(query: [URLQueryItem(name: "inbox", value: "")])
         let drop = try addFile(try f.cliStore(), "handoff.md", in: f.dir.url, handoff: true)
-        let frame = try #require(try await first(events))
+        let frame = try #require(try await first(events, timeout: fsEventsTimeout))
         #expect(frame.event == "created")
         #expect(frame.data.contains(drop.id))
     }
@@ -164,7 +164,7 @@ struct ServiceRunTests {
         for text in ["two", "three!", "four!!"] {
             try Data(text.utf8).write(to: cli.path(of: drop))
         }
-        let frame = try #require(try await first(events))
+        let frame = try #require(try await first(events, timeout: fsEventsTimeout))
         #expect(frame.event == "content")
         #expect(try cli.events().filter { $0.type == .content }.count == 1)
     }
@@ -178,7 +178,7 @@ struct ServiceRunTests {
         defer { Task { await service.stop() } }
         let events = try await f.client().events(query: [URLQueryItem(name: "drop", value: drop.id)])
         try FileManager.default.removeItem(at: cli.path(of: drop))
-        #expect(try await first(events)?.event == "missing")
+        #expect(try await first(events, timeout: fsEventsTimeout)?.event == "missing")
     }
 
     @Test func noPortStillWatchesContentAndRetryRecovers() async throws {
@@ -195,7 +195,7 @@ struct ServiceRunTests {
         #expect(f.infoFile.read() == .noPort(pid: ProcessInfo.processInfo.processIdentifier))
 
         try Data("22".utf8).write(to: cli.path(of: drop))
-        #expect(await eventually { (try? cli.events().last?.type) == .content })
+        #expect(await eventually(timeout: fsEventsTimeout) { (try? cli.events().last?.type) == .content })
 
         #expect(await service.retryPort() == .noPort)
         await holder.stop()

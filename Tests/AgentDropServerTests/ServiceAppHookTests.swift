@@ -25,7 +25,7 @@ struct ServiceAppHookTests {
         func expectChange(_ change: () throws -> Void) async throws {
             let seen = count.value
             try change()
-            #expect(await eventually { count.value > seen })
+            #expect(await eventually(timeout: fsEventsTimeout) { count.value > seen })
         }
         try await expectChange { _ = try addFile(store, "a.md", in: f.dir.url) }
         try await expectChange { _ = try addFile(try f.cliStore(), "b.md", in: f.dir.url) }
