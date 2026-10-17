@@ -288,7 +288,7 @@ struct AppModelLinkTests {
         await model.open(AppLink.url(forDrop: drop.id))
         #expect(model.pendingDropID == drop.id && windows == 1)
         await model.completeSetup()
-        #expect(model.library.selection == .drop(drop.id))
+        #expect(model.library.selection == [.drop(drop.id)])
         #expect(model.pendingDropID == nil)
         await f.stopAll()
     }
@@ -318,7 +318,7 @@ struct AppModelLinkTests {
         await model.open(dropID: drop.id) // `drop open` launched the app: the link beats launch()
         #expect(model.phase == .starting && model.pendingDropID == drop.id)
         await model.launch()
-        #expect(model.library.selection == .drop(drop.id))
+        #expect(model.library.selection == [.drop(drop.id)])
         await f.stopAll()
     }
 

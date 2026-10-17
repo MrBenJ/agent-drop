@@ -14,8 +14,11 @@ extension LibraryModel {
 
     public func reopen(_ id: String) async { await perform { _ = try $0.reopen(id) } }
 
-    public func setArchived(_ id: String, _ archived: Bool) async {
-        await perform { _ = try $0.setArchived(id, archived) }
+    /// Archives (or unarchives) each drop; the list's context menu passes several.
+    public func setArchived(_ ids: [String], _ archived: Bool) async {
+        await perform { store in
+            for id in ids { _ = try store.setArchived(id, archived) }
+        }
     }
 
     /// Spec §3.2 "Remove record", offered only for missing drops.
@@ -41,7 +44,7 @@ extension LibraryModel {
             let drop = try await StoreQueue.run { try store.add(request) }
             registeredInApp.insert(drop.id)
             await reload()
-            selection = .drop(drop.id)
+            selection = [.drop(drop.id)]
             return nil
         } catch {
             return Self.message(error)

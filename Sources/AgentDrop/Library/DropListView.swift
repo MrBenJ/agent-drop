@@ -11,6 +11,11 @@ struct DropListView: View {
             // Rows inserted while the window is open were measured one line tall (titles
             // only). Every row is three lines, so a fixed minimum keeps them all whole.
             .environment(\.defaultMinListRowHeight, DropRow.height)
+            .contextMenu(forSelectionType: LibraryModel.Selection.self) { items in
+                // Right-clicking a selected row acts on the whole selection; any other
+                // row, on that row alone (SwiftUI picks `items` the macOS way).
+                if !items.isEmpty { SelectionActions(library: library, items: items) }
+            }
             .searchable(text: $library.search, placement: .toolbar, prompt: "Title, description, filename")
             .navigationTitle(DropFormatting.windowTitle(title))
     }

@@ -19,7 +19,8 @@ public final class LibraryModel {
     public private(set) var loadError: String?
     public var sidebar: SidebarItem = .allDrops
     public var search = ""
-    public var selection: Selection? {
+    /// The list's selection: Cmd-click, Shift-click and Cmd-A select several.
+    public var selection: Set<Selection> = [] {
         didSet { if selection != oldValue { selectionChanged() } }
     }
     /// An action failed; the window shows it as an alert.
@@ -60,7 +61,7 @@ public final class LibraryModel {
         drops = []
         unregistered = []
         loadError = nil
-        selection = nil
+        selection = []
         sidebar = .allDrops
         search = ""
     }
@@ -104,26 +105,45 @@ public final class LibraryModel {
     }
 
     private func dropStaleSelection() {
-        switch selection {
-        case .drop(let id) where drop(id) == nil: selection = nil
-        case .entry(let name) where !unregistered.contains(where: { $0.name == name }): selection = nil
-        default: break
+        let current = selection.filter { item in
+            switch item {
+            case .drop(let id): drop(id) != nil
+            case .entry(let name): unregistered.contains { $0.name == name }
+            }
         }
+        if current != selection { selection = current }
     }
 
     // MARK: What the views show
 
     public func drop(_ id: String) -> Drop? { drops.first { $0.id == id } }
 
+    /// The drop the detail pane shows: only when it's the one thing selected.
     public var selectedDrop: Drop? {
-        if case .drop(let id) = selection { return drop(id) }
+        if selection.count == 1, case .drop(let id) = selection.first { return drop(id) }
         return nil
     }
 
     public var selectedEntry: UnregisteredEntry? {
-        if case .entry(let name) = selection { return unregistered.first { $0.name == name } }
+        if selection.count == 1, case .entry(let name) = selection.first { return entry(name) }
         return nil
     }
+
+    /// The drops among `items`, newest first.
+    public func drops(in items: Set<Selection>) -> [Drop] {
+        drops.filter { items.contains(.drop($0.id)) }
+    }
+
+    /// Where `items` live in the drop folder, for Reveal in Finder and Open in VS Code.
+    /// Missing drops are left out: there's nothing to show.
+    public func urls(for items: Set<Selection>) -> [URL] {
+        guard let store else { return [] }
+        let files = drops(in: items).filter { !$0.missing }.map { ($0.filename, $0.isFolder) }
+        let entries = unregistered.filter { items.contains(.entry($0.name)) }.map { ($0.name, $0.isFolder) }
+        return (files + entries).map { store.folder.appendingPathComponent($0.0, isDirectory: $0.1) }
+    }
+
+    private func entry(_ name: String) -> UnregisteredEntry? { unregistered.first { $0.name == name } }
 
     /// The list column for the current sidebar item and search.
     public var visibleDrops: [Drop] { drops.filter { sidebar.includes($0) && matchesSearch($0) } }
@@ -185,7 +205,7 @@ public final class LibraryModel {
             sidebar = drop.archived ? .archived : .allDrops
             search = ""
         }
-        selection = .drop(id)
+        selection = [.drop(id)]
         return true
     }
 

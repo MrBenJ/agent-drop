@@ -89,12 +89,12 @@ struct LibraryModelTests {
         let drop = try f.add("a.md")
         let library = LibraryModel()
         await library.attach(f.store)
-        library.selection = .drop(drop.id)
+        library.selection = [.drop(drop.id)]
         #expect(await eventually { library.drop(drop.id)?.readAt != nil })
         #expect(library.unreadCount == 0)
 
-        library.selection = nil
-        library.selection = .drop(drop.id)
+        library.selection = []
+        library.selection = [.drop(drop.id)]
         try await Task.sleep(for: .milliseconds(100))
         #expect(try f.store.events().filter { $0.type == .read }.count == 1)
     }
@@ -104,7 +104,7 @@ struct LibraryModelTests {
         try f.loose("loose.md")
         let library = LibraryModel()
         await library.attach(f.store)
-        library.selection = .entry("loose.md")
+        library.selection = [.entry("loose.md")]
         #expect(library.selectedEntry?.name == "loose.md")
         try await Task.sleep(for: .milliseconds(100))
         #expect(try f.store.events().allSatisfy { $0.type == .created })
@@ -121,7 +121,7 @@ struct LibraryModelTests {
 
         #expect(await library.reveal(archived.id))
         #expect(library.sidebar == .archived && library.search.isEmpty)
-        #expect(library.selection == .drop(archived.id))
+        #expect(library.selection == [.drop(archived.id)])
 
         // A drop created after the last reload is found by reloading.
         let fresh = try f.add("new.md")
@@ -138,17 +138,56 @@ struct LibraryModelTests {
         try f.loose("loose.md")
         let library = LibraryModel()
         await library.attach(f.store)
-        library.selection = .entry("loose.md")
+        library.selection = [.entry("loose.md")]
         try FileManager.default.removeItem(at: f.folder.appendingPathComponent("loose.md"))
         await library.reload()
-        #expect(library.selection == nil)
+        #expect(library.selection.isEmpty)
 
-        library.selection = .drop(drop.id)
+        library.selection = [.drop(drop.id)]
         try FileManager.default.removeItem(at: f.store.path(of: drop))
         _ = try f.store.checkPresence(drop.id)
         try f.store.removeRecord(drop.id)
         await library.reload()
-        #expect(library.selection == nil)
+        #expect(library.selection.isEmpty)
+    }
+
+    @Test func selectingSeveralDropsShowsNoSingleDropAndMarksNoneRead() async throws {
+        let f = try StoreFixture()
+        let a = try f.add("a.md")
+        let b = try f.add("b.md")
+        let library = LibraryModel()
+        await library.attach(f.store)
+        library.selection = [.drop(a.id), .drop(b.id)]
+        #expect(library.selectedDrop == nil)
+        #expect(Set(library.drops(in: library.selection).map(\.id)) == [a.id, b.id])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(try f.store.events().allSatisfy { $0.type == .created })
+    }
+
+    @Test func urlsForASelectionSkipMissingDrops() async throws {
+        let f = try StoreFixture()
+        let present = try f.add("a.md")
+        let gone = try f.add("b.md")
+        try f.loose("loose.md")
+        try FileManager.default.removeItem(at: f.store.path(of: gone))
+        _ = try f.store.checkPresence(gone.id)
+        let library = LibraryModel()
+        await library.attach(f.store)
+        let urls = library.urls(for: [.drop(present.id), .drop(gone.id), .entry("loose.md")])
+        #expect(Set(urls.map(\.lastPathComponent)) == ["a.md", "loose.md"])
+    }
+
+    @Test func reloadKeepsTheRestOfASelectionWhenOneItemGoes() async throws {
+        let f = try StoreFixture()
+        let kept = try f.add("a.md")
+        try f.loose("loose.md")
+        let library = LibraryModel()
+        await library.attach(f.store)
+        library.sidebar = .allDrops
+        library.selection = [.drop(kept.id), .entry("loose.md")]
+        try FileManager.default.removeItem(at: f.folder.appendingPathComponent("loose.md"))
+        await library.reload()
+        #expect(library.selection == [.drop(kept.id)])
     }
 
     @Test func everyReloadBumpsTheRevision() async throws {

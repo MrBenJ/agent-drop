@@ -42,9 +42,9 @@ struct ActionTests {
         let f = try StoreFixture()
         let drop = try f.add("a.md")
         let library = await attached(f)
-        await library.setArchived(drop.id, true)
+        await library.setArchived([drop.id], true)
         #expect(library.drop(drop.id)?.archived == true)
-        await library.setArchived(drop.id, false)
+        await library.setArchived([drop.id], false)
         #expect(library.drop(drop.id)?.archived == false)
 
         await library.removeRecord(drop.id) // file still there: refused
@@ -53,6 +53,20 @@ struct ActionTests {
         try FileManager.default.removeItem(at: f.store.path(of: drop))
         await library.removeRecord(drop.id)
         #expect(library.alert == nil && library.drop(drop.id) == nil)
+    }
+
+    @Test func archivingSeveralDropsArchivesEach() async throws {
+        let f = try StoreFixture()
+        let a = try f.add("a.md")
+        let b = try f.add("b.md")
+        let other = try f.add("c.md")
+        let library = await attached(f)
+        await library.setArchived([a.id, b.id], true)
+        #expect(library.drop(a.id)?.archived == true && library.drop(b.id)?.archived == true)
+        #expect(library.drop(other.id)?.archived == false)
+        await library.setArchived([a.id, b.id], false)
+        #expect(library.drop(a.id)?.archived == false && library.drop(b.id)?.archived == false)
+        #expect(library.alert == nil)
     }
 
     @Test func editAppliesOnlyWhatChanged() async throws {
