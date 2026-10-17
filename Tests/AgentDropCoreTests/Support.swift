@@ -85,3 +85,11 @@ final class Locked<Value>: @unchecked Sendable {
     var value: Value { lock.withLock { _value } }
     func withLock(_ body: (inout Value) -> Void) { lock.withLock { body(&_value) } }
 }
+
+/// Runs a test worker that blocks (on semaphores or the store's lock) on a thread of its
+/// own. Not `DispatchQueue.global()`, nor a private concurrent queue (which draws from the
+/// same pool): that pool has about one thread per core, other tests may be blocking all of
+/// them, and a starved worker times the test out.
+func onOwnThread(_ body: @escaping @Sendable () -> Void) {
+    Thread.detachNewThread(body)
+}

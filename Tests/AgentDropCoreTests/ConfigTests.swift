@@ -19,6 +19,35 @@ struct ConfigTests {
         #expect(store.folderURL(c).path == root.appendingPathComponent("home/AgentDrop").path)
     }
 
+    @Test func tailnetKeysParse() throws {
+        #expect(try store.load().tailnetPort == nil)
+        #expect(try store.load().tailnetMaxBytes == nil)
+        try FileManager.default.createDirectory(at: store.configDir, withIntermediateDirectories: true)
+        try Data(#"{"tailnetPort": 47555, "tailnetMaxBytes": 1000}"#.utf8).write(to: store.configFile)
+        let c = try store.load()
+        #expect(c.tailnetPort == 47555)
+        #expect(c.tailnetMaxBytes == 1000)
+    }
+
+    @Test func tailnetMaxBytesIsBounded() throws {
+        try FileManager.default.createDirectory(at: store.configDir, withIntermediateDirectories: true)
+        let max = AgentDropConfig.maxTailnetMaxBytes
+        let cases: [(String, Int64?)] = [
+            ("9223372036854775807", nil), ("0", nil), ("-1", nil), ("true", nil), ("1.5", nil),
+            ("1", 1), ("\(max)", max), ("\(max + 1)", nil),
+        ]
+        for (json, expected) in cases {
+            try Data(#"{"tailnetMaxBytes": \#(json)}"#.utf8).write(to: store.configFile)
+            #expect(try store.load().tailnetMaxBytes == expected, "tailnetMaxBytes \(json)")
+        }
+    }
+
+    @Test func allowTailnetKeyIsIgnored() throws {
+        try FileManager.default.createDirectory(at: store.configDir, withIntermediateDirectories: true)
+        try Data(#"{"allowTailnet": true}"#.utf8).write(to: store.configFile)
+        #expect(try store.load() == AgentDropConfig())
+    }
+
     @Test func setFolderAndRetentionRoundTrip() throws {
         let target = root.appendingPathComponent("Desk top/Agent Drop", isDirectory: true)
         try store.setFolder(target)

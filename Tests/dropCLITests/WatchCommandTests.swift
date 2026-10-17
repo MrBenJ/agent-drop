@@ -17,8 +17,10 @@ struct WatchCommandTests {
         return AgentDropService(config: env.config, options: options)
     }
 
+    /// 20 s: most waits here hang on FSEvents, which can lag several seconds under the
+    /// full parallel suite. The polling still returns as soon as the condition holds.
     func waitFor(_ condition: @Sendable () async -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(20)
         while ContinuousClock.now < deadline {
             if await condition() { return true }
             try? await Task.sleep(for: .milliseconds(25))

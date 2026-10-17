@@ -4,6 +4,9 @@ import GRDB
 public enum AddSource: Sendable {
     case path(URL)
     case stdin(Data)
+    /// Content already inside this store's `.agentdrop/staging/<uuid>/`, owned by the caller
+    /// (who deletes its staging directory afterwards).
+    case staged(URL, isFolder: Bool)
 }
 
 public struct AddRequest: Sendable {
@@ -102,11 +105,22 @@ extension DropStore {
             let name = try Validation.dropName(rawName)
             guard !data.isEmpty else { throw AgentDropError.invalid("stdin was empty; nothing to drop") }
             guard !request.move else { throw AgentDropError.invalid("--move can't be used with stdin") }
-            let staging = try self.stagingDirectory()
+            let staging = try self.makeStagingDirectory()
             stagingDirectory = staging
             let staged = staging.appendingPathComponent("content")
             try data.write(to: staged, options: .withoutOverwriting)
             return .copy(staged, isFolder: false, name: name)
+
+        case .staged(let url, let isFolder):
+            guard let rawName = request.name else { throw AgentDropError.invalid("a staged drop needs a name") }
+            let name = try Validation.dropName(rawName)
+            guard !request.move else { throw AgentDropError.invalid("--move can't be used with a staged drop") }
+            let stagingRoot = folder.appendingPathComponent(".agentdrop/staging", isDirectory: true)
+                .resolvingSymlinksInPath().path
+            guard url.resolvingSymlinksInPath().path.hasPrefix(stagingRoot + "/") else {
+                throw AgentDropError.invalid("a staged drop must live inside the store's staging directory")
+            }
+            return .copy(url, isFolder: isFolder, name: name)
 
         case .path(let rawSource):
             let source = rawSource.standardizedFileURL
@@ -129,7 +143,7 @@ extension DropStore {
 
             let name = try Validation.dropName(request.name ?? source.lastPathComponent)
             if request.move { return .move(source, isFolder: isFolder, name: name) }
-            let staging = try self.stagingDirectory()
+            let staging = try self.makeStagingDirectory()
             stagingDirectory = staging
             let staged = staging.appendingPathComponent("content", isDirectory: isFolder)
             try fm.copyItem(at: source, to: staged)
@@ -193,10 +207,33 @@ extension DropStore {
         }
     }
 
-    private func stagingDirectory() throws -> URL {
+    /// A fresh `.agentdrop/staging/<uuid>/` directory inside the store folder.
+    public func makeStagingDirectory() throws -> URL {
         let url = folder.appendingPathComponent(".agentdrop/staging/\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    /// Removes `.agentdrop/staging/<uuid>/` directories left by a crash mid-upload: those
+    /// whose own date and every direct child's are older than `age`. A fresh one may
+    /// belong to a `drop add` or upload in progress and is left alone.
+    public func removeStaleStagingDirectories(olderThan age: TimeInterval, now: Date = Date()) {
+        let fm = FileManager.default
+        let root = folder.appendingPathComponent(".agentdrop/staging", isDirectory: true)
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey]
+        guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: keys) else { return }
+        func modified(_ url: URL) -> Date {
+            (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? now
+        }
+        let cutoff = now.addingTimeInterval(-age)
+        for entry in entries {
+            guard let values = try? entry.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            let children = (try? fm.contentsOfDirectory(at: entry,
+                                                        includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            let newest = ([entry] + children).map(modified).max() ?? now
+            if newest < cutoff { try? fm.removeItem(at: entry) }
+        }
     }
 
     /// The entry's spelling as stored on disk, which can differ from the requested name

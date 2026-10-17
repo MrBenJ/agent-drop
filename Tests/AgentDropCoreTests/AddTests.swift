@@ -44,7 +44,7 @@ struct AddTests {
         })
         let registrar = try DropStore.open(folder: f.folder, retention: .default)
         finished.enter()
-        DispatchQueue.global().async {
+        onOwnThread {
             defer { finished.leave() }
             do {
                 let drop = try copier.add(AddRequest(source: .path(source), from: "copier"))
@@ -55,7 +55,7 @@ struct AddTests {
         }
         #expect(placed.wait(timeout: .now() + 5) == .success)
         finished.enter()
-        DispatchQueue.global().async {
+        onOwnThread {
             defer { registrationFinished.signal(); finished.leave() }
             do {
                 let drop = try registrar.add(AddRequest(
@@ -202,5 +202,97 @@ struct AddTests {
         expectError(1) { _ = try f.store.add(AddRequest(source: .path(src), from: "  ")) }
         expectError(1) { _ = try f.store.add(AddRequest(source: .path(src), project: "a\nb", from: "t")) }
         #expect(!fm.fileExists(atPath: f.folder.appendingPathComponent("p.md").path))
+    }
+
+    // MARK: staged source
+
+    private func stagedFile(_ f: Fixture, _ contents: String = "# Hello\n") throws -> URL {
+        let url = try f.store.makeStagingDirectory().appendingPathComponent("content")
+        try Data(contents.utf8).write(to: url)
+        return url
+    }
+
+    @Test func stagedFileIsPlacedLikeACopy() throws {
+        let f = try Fixture()
+        let url = try stagedFile(f, "# Hello\n")
+        let drop = try f.store.add(AddRequest(source: .staged(url, isFolder: false), name: "plan.md", from: "aria"))
+        #expect(drop.filename == "plan.md")
+        #expect(drop.title == "Hello")
+        #expect(fm.fileExists(atPath: f.folder.appendingPathComponent("plan.md").path))
+        #expect(try f.store.events().filter { $0.type == .created }.count == 1)
+    }
+
+    @Test func stagedFolderWorks() throws {
+        let f = try Fixture()
+        let dir = try f.store.makeStagingDirectory().appendingPathComponent("content", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("# Inside\n".utf8).write(to: dir.appendingPathComponent("README.md"))
+        let drop = try f.store.add(AddRequest(source: .staged(dir, isFolder: true), name: "bundle", from: "aria"))
+        #expect(drop.isFolder)
+        #expect(drop.filename == "bundle")
+        #expect(fm.fileExists(atPath: f.folder.appendingPathComponent("bundle/README.md").path))
+    }
+
+    @Test func stagedNameCollisionGetsSuffix() throws {
+        let f = try Fixture()
+        try f.add("plan.md")
+        let url = try stagedFile(f)
+        let drop = try f.store.add(AddRequest(source: .staged(url, isFolder: false), name: "plan.md", from: "aria"))
+        #expect(drop.filename == "plan-2.md")
+    }
+
+    @Test func stagedOutsideStagingIsRejected() throws {
+        let f = try Fixture()
+        let outside = try f.outside("x.md")
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(outside, isFolder: false), name: "x.md", from: "a")) }
+        #expect(fm.fileExists(atPath: outside.path))
+    }
+
+    @Test func stagedWithoutNameIsRejected() throws {
+        let f = try Fixture()
+        let url = try stagedFile(f)
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(url, isFolder: false), from: "a")) }
+    }
+
+    @Test func stagedWithMoveIsRejected() throws {
+        let f = try Fixture()
+        let url = try stagedFile(f)
+        expectError(1) {
+            _ = try f.store.add(AddRequest(source: .staged(url, isFolder: false), name: "p.md", from: "a", move: true))
+        }
+    }
+
+    @Test func stagedSymlinkEscapingStagingIsRejected() throws {
+        let f = try Fixture()
+        let outside = try f.outside("secret.md", "# Secret\n")
+        let link = try f.store.makeStagingDirectory().appendingPathComponent("content")
+        try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(link, isFolder: false), name: "s.md", from: "a")) }
+        #expect(fm.fileExists(atPath: outside.path))
+        #expect(!fm.fileExists(atPath: f.folder.appendingPathComponent("s.md").path))
+        #expect(try f.store.list(ListFilter()).isEmpty)
+    }
+
+    @Test func stagedDotDotTraversalIsRejected() throws {
+        let f = try Fixture()
+        let staging = try f.store.makeStagingDirectory()
+        let target = f.folder.appendingPathComponent(".agentdrop/x")
+        try Data("# X\n".utf8).write(to: target)
+        let sneaky = URL(fileURLWithPath: staging.path + "/../../x")
+        #expect(fm.fileExists(atPath: sneaky.path))
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(sneaky, isFolder: false), name: "x.md", from: "a")) }
+        #expect(fm.fileExists(atPath: target.path))
+        #expect(try f.store.list(ListFilter()).isEmpty)
+    }
+
+    @Test func stagedSiblingPrefixIsRejected() throws {
+        let f = try Fixture()
+        _ = try f.store.makeStagingDirectory()
+        let evil = f.folder.appendingPathComponent(".agentdrop/staging-evil/x")
+        try fm.createDirectory(at: evil.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("# Evil\n".utf8).write(to: evil)
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(evil, isFolder: false), name: "x.md", from: "a")) }
+        #expect(fm.fileExists(atPath: evil.path))
+        #expect(try f.store.list(ListFilter()).isEmpty)
     }
 }

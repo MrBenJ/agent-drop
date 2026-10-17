@@ -9,7 +9,7 @@ enum HTTPAPI {
         let router = Router()
         // Outermost first: errors become JSON, then Host and token are checked, for every
         // request including unknown routes.
-        router.add(middleware: ErrorMiddleware())
+        router.add(middleware: ErrorMiddleware<BasicRequestContext>())
         router.add(middleware: AccessMiddleware(token: token, port: port))
 
         router.get("/drops") { request, _ -> Response in
@@ -199,27 +199,34 @@ struct APIError: Error {
     }
 }
 
-struct ErrorMiddleware: RouterMiddleware {
-    typealias Context = BasicRequestContext
+struct ErrorMiddleware<Context: RequestContext>: RouterMiddleware {
+    /// When set (the tailnet listener), every 500 says only this, so raw error text
+    /// (which can name paths on this Mac) never reaches another machine.
+    var internalErrorMessage: String?
 
     func handle(_ request: Request, context: Context,
                 next: (Request, Context) async throws -> Response) async throws -> Response {
+        let error: APIError
         do {
             return try await next(request, context)
-        } catch let error as APIError {
-            return error.response
-        } catch let error as AgentDropError {
-            switch error {
-            case .notFound(let m): return APIError(.notFound, m).response
-            case .invalid(let m) where m == "store busy, retry": return APIError(.serviceUnavailable, m).response
-            case .invalid(let m): return APIError(.badRequest, m).response
-            case .conflict(let m): return APIError(.conflict, m).response
+        } catch let apiError as APIError {
+            error = apiError
+        } catch let storeError as AgentDropError {
+            switch storeError {
+            case .notFound(let m): error = APIError(.notFound, m)
+            case .invalid(let m) where m == "store busy, retry": error = APIError(.serviceUnavailable, m)
+            case .invalid(let m): error = APIError(.badRequest, m)
+            case .conflict(let m): error = APIError(.conflict, m)
             }
-        } catch let error as HTTPError {
-            return APIError(error.status, error.body ?? error.status.reasonPhrase).response
-        } catch {
-            return APIError(.internalServerError, "\(error)").response
+        } catch let httpError as HTTPError {
+            error = APIError(httpError.status, httpError.body ?? httpError.status.reasonPhrase)
+        } catch let other {
+            error = APIError(.internalServerError, "\(other)")
         }
+        if let internalErrorMessage, error.status == .internalServerError {
+            return APIError(.internalServerError, internalErrorMessage).response
+        }
+        return error.response
     }
 }
 
@@ -239,7 +246,7 @@ struct AccessMiddleware: RouterMiddleware {
         guard let host = request.head.authority, allowed.contains(host.lowercased()), !extraHost else {
             throw APIError(.forbidden, "Host not allowed")
         }
-        guard request.headers[.authorization] == "Bearer \(token)" else {
+        guard Secrets.constantTimeEquals(request.headers[.authorization] ?? "", "Bearer \(token)") else {
             throw APIError(.unauthorized, "missing or invalid token")
         }
         return try await next(request, context)

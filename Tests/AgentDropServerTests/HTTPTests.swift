@@ -282,14 +282,32 @@ struct HTTPPortTests {
     @Test func fallsThroughTakenPortsAndReportsExhaustion() async throws {
         let store = try StoreFixture()
         let hub = try EventHub(store: store.store)
-        let base = randomPortBase()
-        let first = try await HTTPServer.start(store: store.store, hub: hub, token: "t", portBase: base, attempts: 2)
-        let second = try await HTTPServer.start(store: store.store, hub: hub, token: "t", portBase: first.port, attempts: 2)
-        #expect(second.port == first.port + 1)
-        await #expect(throws: HTTPServer.PortsExhausted.self) {
-            _ = try await HTTPServer.start(store: store.store, hub: hub, token: "t", portBase: first.port, attempts: 2)
+        // Parallel tests bind random ports in the same range, so base+1 may be held by an
+        // outsider. Retry the whole scenario on a fresh base until it runs undisturbed.
+        for attempt in 1...10 {
+            let first = try await HTTPServer.start(
+                store: store.store, hub: hub, token: "t", portBase: randomPortBase(), attempts: 2)
+            let second: HTTPServer
+            do {
+                second = try await HTTPServer.start(
+                    store: store.store, hub: hub, token: "t", portBase: first.port, attempts: 2)
+            } catch is HTTPServer.PortsExhausted where attempt < 10 {
+                await first.stop()
+                continue
+            }
+            if second.port != first.port + 1 && attempt < 10 {
+                await second.stop()
+                await first.stop()
+                continue
+            }
+            #expect(second.port == first.port + 1)
+            await #expect(throws: HTTPServer.PortsExhausted.self) {
+                _ = try await HTTPServer.start(
+                    store: store.store, hub: hub, token: "t", portBase: first.port, attempts: 2)
+            }
+            await second.stop()
+            await first.stop()
+            return
         }
-        await second.stop()
-        await first.stop()
     }
 }

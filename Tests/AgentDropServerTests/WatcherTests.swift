@@ -33,7 +33,7 @@ struct FolderWatcherTests {
         try Data("c".utf8).write(to: folder.appendingPathComponent(".agentdrop/x/y"))
         try Data("d".utf8).write(to: folder.appendingPathComponent(".hidden"))
 
-        #expect(await eventually {
+        #expect(await eventually(timeout: fsEventsTimeout) {
             let changes = seen.value
             return changes.contains(.entry("plan.md")) && changes.contains(.entry("bundle")) && changes.contains(.store)
         })

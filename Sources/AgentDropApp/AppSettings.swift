@@ -17,14 +17,22 @@ public final class AppSettings {
         didSet { defaults.set(hideDockIcon, forKey: Keys.hideDock) }
     }
 
+    /// Settings → Tailnet "Receive drops from my tailnet", default off. The only switch
+    /// for it: config.json can't turn it on, and the CLI can't show or set it.
+    public var receiveFromTailnet: Bool {
+        didSet { defaults.set(receiveFromTailnet, forKey: Keys.receiveFromTailnet) }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         notifyOnNewDrops = defaults.object(forKey: Keys.notify) as? Bool ?? true
         hideDockIcon = defaults.bool(forKey: Keys.hideDock)
+        receiveFromTailnet = defaults.bool(forKey: Keys.receiveFromTailnet)
     }
 
     private enum Keys {
         static let notify = "notifyOnNewDrops"
         static let hideDock = "hideDockIcon"
+        static let receiveFromTailnet = "receiveFromTailnet"
     }
 }

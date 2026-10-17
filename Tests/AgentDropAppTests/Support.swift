@@ -41,6 +41,11 @@ struct StoreFixture {
     }
 }
 
+/// For a wait on something only FSEvents delivers (a CLI write, a config change). Under
+/// the full parallel suite fseventsd can lag several seconds, so 5 s is too tight; the
+/// polling still returns as soon as the condition holds.
+let fsEventsTimeout: Duration = .seconds(20)
+
 /// Polls `condition` on the main actor until it holds or `timeout` passes.
 @MainActor
 func eventually(timeout: Duration = .seconds(5), _ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
@@ -77,4 +82,12 @@ final class PortBlocker: @unchecked Sendable {
     }
 
     deinit { release() }
+}
+
+/// Runs blocking test work (a burst of CLI store writes) on a thread of its own. On the
+/// main actor it would stall every other `@MainActor` test and the models they drive.
+func offMainActor<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        Thread.detachNewThread { continuation.resume(with: Result { try body() }) }
+    }
 }

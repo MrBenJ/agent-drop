@@ -67,3 +67,33 @@ only forgets setup and settings).
       opens the drop. Off: no notification.
 - [ ] Event history: presets and Custom… write `eventRetentionDays` (`drop config show`).
       `drop config set-retention 14` shows as Custom 14. The note about deletion is shown.
+
+## Tailnet (two Macs)
+Needs a receiver (the laptop) and a sender (a second Mac), both on the same tailnet, both
+running `drop` 0.2.0 or newer.
+- [ ] Receiver: Settings → General → Tailnet → switch on **Receive drops from my tailnet**.
+      The status line reads "Receiving on <host>:47400".
+- [ ] Receiver: **Copy setup command** and **Copy key** both show while receiving; the first
+      copies the whole `drop remote add laptop --url … --key <hex>` line, the second just
+      the 64-character key.
+- [ ] On the sender, register with the copied key: `read -rs KEY` (paste it; nothing
+      echoes), then
+      `printf '%s' "$KEY" | drop remote add laptop --url http://<host>:47400 --key -; unset KEY`
+      (or paste the copied setup command, which records the key in shell history). Then
+      `drop remote test laptop`: it says the remote is reachable and accepted the key.
+- [ ] Receiver: move `~/Library/Application Support/AgentDrop/tailnet.json` aside, click
+      **Copy key**: the red line reads "No sender key — click Regenerate key."
+      **Regenerate key** clears it.
+- [ ] Sender: `drop add file.md --to laptop --from "sender"`. The receiver shows the drop
+      and a notification.
+- [ ] Sender: `drop add some-folder --to laptop --from "sender"`: same, folder intact.
+- [ ] Sender: `echo hi | drop add - --name hi.txt --to laptop --from "sender"`: same.
+- [ ] Sleep the receiver, then send from the sender: the "Can't reach `laptop`" error.
+- [ ] Receiver: **Regenerate key**. Sender sends again: the "key was rejected" (401) message.
+      Re-run the new setup command and sending works again.
+- [ ] Receiver: switch the toggle off. The sender is refused; the status line reads "Off".
+- [ ] Toggle back on. From the sender,
+      `curl -i -H "Authorization: Bearer <key>" http://<host>:47400/drops` returns 404
+      (nothing can be read over the network).
+- [ ] With the macOS firewall on, a fresh build may ask to accept incoming connections;
+      allowing it makes sends work.

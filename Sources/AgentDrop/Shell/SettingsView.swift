@@ -1,5 +1,7 @@
 import AgentDropApp
 import AgentDropCore
+import AgentDropServer
+import AppKit
 import SwiftUI
 
 /// Spec §6 settings and §5.1 Settings → Event history.
@@ -21,6 +23,8 @@ struct SettingsView: View {
 struct GeneralSettings: View {
     @Bindable var model: AppModel
     @State private var launchAtLogin = false
+    @State private var receiveFromTailnet = false
+    @State private var confirmingRegenerate = false
 
     var body: some View {
         Form {
@@ -42,6 +46,7 @@ struct GeneralSettings: View {
                     }
                 }
             }
+            tailnetSection
             Toggle("Launch at login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, enabled in
                     guard enabled != model.launchesAtLogin else { return }
@@ -55,7 +60,59 @@ struct GeneralSettings: View {
                 .onChange(of: model.settings.hideDockIcon) { _, hidden in DockIcon.apply(hidden: hidden) }
             Toggle("Notify on new drops", isOn: Bindable(model.settings).notifyOnNewDrops)
         }
-        .onAppear { launchAtLogin = model.launchesAtLogin }
+        .onAppear {
+            launchAtLogin = model.launchesAtLogin
+            receiveFromTailnet = model.settings.receiveFromTailnet
+        }
+        .onChange(of: model.settings.receiveFromTailnet) { _, on in receiveFromTailnet = on }
+        .alert("Regenerate the key?", isPresented: $confirmingRegenerate) {
+            Button("Regenerate", role: .destructive) { model.regenerateTailnetKey() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Senders using the old key will stop working until you run the new setup command on them.")
+        }
+    }
+
+    @ViewBuilder private var tailnetSection: some View {
+        Section("Tailnet") {
+            Toggle("Receive drops from my tailnet", isOn: $receiveFromTailnet)
+                .onChange(of: receiveFromTailnet) { _, on in
+                    guard on != model.settings.receiveFromTailnet else { return }
+                    Task {
+                        await model.setReceiveFromTailnet(on)
+                        receiveFromTailnet = model.settings.receiveFromTailnet
+                    }
+                }
+            Text("Only devices on your Tailscale network can connect, and they can only send drops — never read them. If the macOS firewall is on, allow Agent Drop when asked.")
+                .font(.caption).foregroundStyle(.secondary)
+            LabeledContent("Status") { Text(tailnetText) }
+            if case .receiving = model.tailnetState {
+                HStack {
+                    Button("Copy setup command") { copy(model.tailnetSetupCommandToCopy()) }
+                    Button("Copy key") { copy(model.tailnetKeyToCopy()) }
+                    Button("Regenerate key") { confirmingRegenerate = true }
+                }
+            }
+            if let error = model.tailnetError {
+                Text(error).foregroundStyle(.red).font(.callout)
+            }
+        }
+    }
+
+    private func copy(_ text: String?) {
+        guard let text else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private var tailnetText: String {
+        switch model.tailnetState {
+        case .off: "Off"
+        case .waiting: "Starts when Agent Drop is serving"
+        case .notConnected: "Tailscale not connected"
+        case .portInUse(let port): "Port \(port) is in use"
+        case .receiving(let host, let port): "Receiving on \(host):\(port)"
+        }
     }
 
     private var serverText: String {

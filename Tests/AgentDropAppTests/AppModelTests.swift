@@ -37,11 +37,27 @@ final class AppFixture {
     var defaultFolder: URL { config.defaultFolder }
     var desktopFolder: URL { config.homeDir.appendingPathComponent("Desktop/AgentDrop", isDirectory: true) }
     var infoFile: ServerInfoFile { ServerInfoFile(configDir: config.configDir) }
+    var tailnetKeyFile: TailnetKeyFile { TailnetKeyFile(configDir: config.configDir) }
+    nonisolated static let tailnetIdentity = TailnetIdentity(address: "100.100.1.2", dnsName: "laptop.tail-test.ts.net")
+
+    /// Writes a random free-looking `tailnetPort` into config.json and returns it.
+    @discardableResult
+    func useTailnetPort(_ port: Int = Int.random(in: 20_000...59_000)) throws -> Int {
+        var dict = try config.readDict()
+        dict["tailnetPort"] = port
+        try config.writeDict(dict)
+        return port
+    }
 
     func model(poster: NoticePosting? = nil) -> AppModel {
         var options = AgentDropService.Options()
         options.portBase = Int.random(in: 20_000...59_000)
         options.debounce = .milliseconds(50)
+        // The tailnet listener binds 127.0.0.1 and admits loopback peers, as a fake Tailscale reports.
+        options.tailnetLocator = TailnetLocator { AppFixture.tailnetIdentity }
+        options.tailnetPoll = .milliseconds(100)
+        options.tailnetBindHost = { _ in "127.0.0.1" }
+        options.tailnetPeerAllowed = { $0 == "127.0.0.1" }
         let model = AppModel(configStore: config, loginItem: loginItem, settings: AppSettings(defaults: defaults),
                              poster: poster, serviceOptions: options)
         models.append(model)
@@ -166,9 +182,9 @@ struct AppModelFolderTests {
         let firstToken = f.infoFile.read()?.token
         let other = f.scratch.url.appendingPathComponent("Other", isDirectory: true)
         try f.config.setFolder(other) // `drop config set-folder`, seen through the config watcher
-        #expect(await eventually { model.library.store?.folder.path == other.path })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.store?.folder.path == other.path })
         #expect(model.phase == .running)
-        #expect(await eventually { f.infoFile.read()?.token != firstToken })
+        #expect(await eventually(timeout: fsEventsTimeout) { f.infoFile.read()?.token != firstToken })
         await f.stopAll()
     }
 
@@ -328,13 +344,16 @@ struct AppModelLinkTests {
         let model = f.model()
         await model.launch()
         let cli = try DropStore.open(folder: f.defaultFolder, retention: .default)
-        for i in 0..<60 {
-            let source = f.scratch.url.appendingPathComponent("burst/\(i).md")
-            try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data("# \(i)".utf8).write(to: source)
-            _ = try cli.add(AddRequest(source: .path(source), from: "agent"))
+        let burst = f.scratch.url.appendingPathComponent("burst", isDirectory: true)
+        try await offMainActor {
+            for i in 0..<60 {
+                let source = burst.appendingPathComponent("\(i).md")
+                try FileManager.default.createDirectory(at: burst, withIntermediateDirectories: true)
+                try Data("# \(i)".utf8).write(to: source)
+                _ = try cli.add(AddRequest(source: .path(source), from: "agent"))
+            }
         }
-        #expect(await eventually { model.library.drops.count == 60 })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.drops.count == 60 })
         await f.stopAll()
     }
 
@@ -392,9 +411,9 @@ struct AppModelLinkTests {
         let source = f.scratch.url.appendingPathComponent("x.md")
         try Data("# X".utf8).write(to: source)
         let drop = try cli.add(AddRequest(source: .path(source), from: "agent"))
-        #expect(await eventually { model.library.drop(drop.id) != nil })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.drop(drop.id) != nil })
         try Data("y".utf8).write(to: f.defaultFolder.appendingPathComponent("loose.txt"))
-        #expect(await eventually { model.library.unregistered.map(\.name) == ["loose.txt"] })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.unregistered.map(\.name) == ["loose.txt"] })
         await f.stopAll()
     }
 }
@@ -411,14 +430,184 @@ struct AppModelNotificationTests {
         let source = f.scratch.url.appendingPathComponent("x.md")
         try Data("# From the CLI".utf8).write(to: source)
         _ = try cli.add(AddRequest(source: .path(source), from: "agent"))
-        #expect(await eventually { poster.posted.map(\.title) == ["From the CLI"] })
+        #expect(await eventually(timeout: fsEventsTimeout) { poster.posted.map(\.title) == ["From the CLI"] })
 
         model.settings.notifyOnNewDrops = false
         let second = f.scratch.url.appendingPathComponent("y.md")
         try Data("# Quiet".utf8).write(to: second)
         _ = try cli.add(AddRequest(source: .path(second), from: "agent"))
-        #expect(await eventually { model.library.drops.count == 2 })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.drops.count == 2 })
         #expect(poster.posted.count == 1)
         await model.shutdown()
+    }
+}
+
+@MainActor
+struct AppModelTailnetTests {
+    private static func receiving(_ port: Int) -> TailnetState {
+        .receiving(host: "laptop.tail-test.ts.net", port: port)
+    }
+
+    @Test func tailnetOffByDefault() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        try f.useTailnetPort()
+        let model = f.model()
+        await model.launch()
+        #expect(model.phase == .running)
+        #expect(model.tailnetState == .off)
+        #expect(!model.settings.receiveFromTailnet)
+        #expect(model.tailnetSetupCommand == nil)
+        #expect(!FileManager.default.fileExists(atPath: f.tailnetKeyFile.url.path))
+        await f.stopAll()
+    }
+
+    @Test func turningOnCreatesKeyAndReceives() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let port = try f.useTailnetPort()
+        let model = f.model()
+        await model.launch()
+        await model.setReceiveFromTailnet(true)
+        #expect(f.tailnetKeyFile.read() != nil)
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == Self.receiving(port) })
+        #expect(model.settings.receiveFromTailnet)
+        #expect(model.tailnetError == nil)
+        let command = try #require(model.tailnetSetupCommand)
+        #expect(command.wholeMatch(of: /drop remote add laptop --url http:\/\/laptop\.tail-test\.ts\.net:\d+ --key [0-9a-f]{64}/) != nil)
+        #expect(command == "drop remote add laptop --url http://laptop.tail-test.ts.net:\(port) --key \(f.tailnetKeyFile.read()!)")
+
+        await model.setReceiveFromTailnet(false)
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == .off })
+        #expect(!model.settings.receiveFromTailnet)
+        #expect(model.tailnetSetupCommand == nil)
+        await f.stopAll()
+    }
+
+    @Test func aKeyThatCantBeWrittenLeavesTheToggleOff() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        try f.useTailnetPort()
+        // A directory where tailnet.json should be: the key can't be read or written.
+        try FileManager.default.createDirectory(at: f.tailnetKeyFile.url, withIntermediateDirectories: true)
+        let model = f.model()
+        await model.launch()
+        await model.setReceiveFromTailnet(true)
+        #expect(model.tailnetError != nil)
+        #expect(!model.settings.receiveFromTailnet)
+        #expect(model.tailnetState == .off)
+        await f.stopAll()
+    }
+
+    @Test func configEditCannotTurnItOn() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        try f.useTailnetPort()
+        let model = f.model()
+        await model.launch()
+        var dict = try f.config.readDict()
+        dict["allowTailnet"] = true
+        try f.config.writeDict(dict)
+        await model.configDidChange()
+        try? await Task.sleep(for: .milliseconds(300))
+        #expect(model.tailnetState == .off)
+        #expect(!model.settings.receiveFromTailnet)
+        #expect(!FileManager.default.fileExists(atPath: f.tailnetKeyFile.url.path))
+        await f.stopAll()
+    }
+
+    @Test func relaunchWithToggleOnResumes() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let port = try f.useTailnetPort()
+        let first = f.model()
+        await first.launch()
+        await first.setReceiveFromTailnet(true)
+        #expect(await eventually(timeout: .seconds(1)) { first.tailnetState == Self.receiving(port) })
+        await first.shutdown()
+
+        let second = f.model()
+        #expect(second.settings.receiveFromTailnet)
+        await second.launch()
+        #expect(second.phase == .running)
+        #expect(await eventually(timeout: .seconds(1)) { second.tailnetState == Self.receiving(port) })
+        await f.stopAll()
+    }
+
+    @Test func regenerateChangesTheSetupCommandKey() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let port = try f.useTailnetPort()
+        let model = f.model()
+        await model.launch()
+        await model.setReceiveFromTailnet(true)
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == Self.receiving(port) })
+        let before = try #require(model.tailnetSetupCommand)
+        let oldKey = try #require(f.tailnetKeyFile.read())
+        model.regenerateTailnetKey()
+        #expect(model.tailnetError == nil)
+        let newKey = try #require(f.tailnetKeyFile.read())
+        #expect(newKey != oldKey)
+        let after = try #require(model.tailnetSetupCommand)
+        #expect(after != before)
+        #expect(after.hasSuffix("--key \(newKey)"))
+        await f.stopAll()
+    }
+
+    @Test func copyKeyReadsTheKeyFresh() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let port = try f.useTailnetPort()
+        let model = f.model()
+        #expect(model.tailnetKeyToCopy() == nil) // not receiving: nothing to copy, no error
+        #expect(model.tailnetSetupCommandToCopy() == nil)
+        #expect(model.tailnetError == nil)
+        await model.launch()
+        await model.setReceiveFromTailnet(true)
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == Self.receiving(port) })
+        #expect(model.tailnetKeyToCopy() == f.tailnetKeyFile.read())
+        model.regenerateTailnetKey()
+        let newKey = try #require(f.tailnetKeyFile.read())
+        #expect(model.tailnetKeyToCopy() == newKey)
+        #expect(model.tailnetSetupCommandToCopy() == model.tailnetSetupCommand)
+        #expect(model.tailnetError == nil)
+        await f.stopAll()
+    }
+
+    @Test(arguments: [false, true])
+    func copyingWithoutAKeyFileSaysToRegenerate(malformed: Bool) async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let port = try f.useTailnetPort()
+        let model = f.model()
+        await model.launch()
+        await model.setReceiveFromTailnet(true)
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == Self.receiving(port) })
+        try FileManager.default.removeItem(at: f.tailnetKeyFile.url)
+        if malformed { try Data(#"{"key":"nope"}"#.utf8).write(to: f.tailnetKeyFile.url) }
+
+        #expect(model.tailnetKeyToCopy() == nil)
+        #expect(model.tailnetError == "No sender key — click Regenerate key.")
+        model.regenerateTailnetKey()
+        #expect(model.tailnetError == nil)
+        try FileManager.default.removeItem(at: f.tailnetKeyFile.url)
+        #expect(model.tailnetSetupCommandToCopy() == nil)
+        #expect(model.tailnetError == "No sender key — click Regenerate key.")
+        await f.stopAll()
+    }
+
+    @Test func changingTailnetPortInConfigRestarts() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let port = try f.useTailnetPort()
+        let model = f.model()
+        await model.launch()
+        await model.setReceiveFromTailnet(true)
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == Self.receiving(port) })
+        let newPort = try f.useTailnetPort(port == 59_999 ? port - 1 : port + 1)
+        await model.configDidChange()
+        #expect(await eventually(timeout: .seconds(1)) { model.tailnetState == Self.receiving(newPort) })
+        #expect(model.phase == .running)
+        await f.stopAll()
     }
 }

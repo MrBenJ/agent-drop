@@ -23,6 +23,14 @@ public actor AgentDropService {
         /// Called (on no particular thread) whenever the folder or the store may have
         /// changed: a commit, a CLI write, an entry added or removed. The app reloads on it.
         public var onChange: @Sendable () -> Void = {}
+        public var tailnetLocator: TailnetLocator = .live
+        /// How often to look for Tailscale coming, going or changing address while enabled.
+        public var tailnetPoll: Duration = .seconds(10)
+        /// nil: the identity's address. Tests bind 127.0.0.1.
+        public var tailnetBindHost: (@Sendable (TailnetIdentity) -> String)? = nil
+        public var tailnetPeerAllowed: @Sendable (String) -> Bool = TailnetAccess.isTailnetPeer
+        /// Called on every change of `tailnetState`.
+        public var onTailnetChange: @Sendable (TailnetState) -> Void = { _ in }
 
         public init() {}
     }
@@ -45,6 +53,17 @@ public actor AgentDropService {
     /// The last queued operation. start/stop/retryPort run one at a time, in call order:
     /// each suspends on its way, and an overlapping call must not see a half-started state.
     private var lastOperation: Task<Void, Never>?
+
+    public private(set) var tailnetState: TailnetState = .off
+    /// The Settings toggle; it outlives `stop()` and `start()`.
+    private var tailnetEnabled = false
+    private var tailnetServer: TailnetServer?
+    /// The identity `tailnetServer` was bound for.
+    private var tailnetIdentity: TailnetIdentity?
+    private var tailnetPollTask: Task<Void, Never>?
+    /// Bumped whenever the poll task is replaced or cancelled, so a poll that was already
+    /// queued behind a stop or a disable does nothing.
+    private var tailnetPollGeneration = 0
 
     /// The running store. In-process writers (the app) should write through it: its
     /// commits reach event-stream clients at once.
@@ -83,6 +102,12 @@ public actor AgentDropService {
         _ = try? await serially { await $0.performStop() }
     }
 
+    /// Turns the tailnet listener on or off. While the service is stopped, on means `.waiting`.
+    @discardableResult
+    public func setTailnet(enabled: Bool) async -> TailnetState {
+        (try? await serially { await $0.performSetTailnet(enabled: enabled) }) ?? tailnetState
+    }
+
     private func serially<T: Sendable>(_ operation: @escaping @Sendable (AgentDropService) async throws -> T)
         async throws -> T
     {
@@ -109,6 +134,7 @@ public actor AgentDropService {
         // Spec §3.2: reconcile on launch. A busy store is skipped; the next change to an
         // entry re-checks that drop anyway.
         _ = try? store.reconcile()
+        store.removeStaleStagingDirectories(olderThan: 3600)
         let hub = try EventHub(store: store)
         let onChange = options.onChange
         store.observeEventCommits {
@@ -141,7 +167,12 @@ public actor AgentDropService {
         self.watcher = watcher
         do {
             try watcher.start()
-            return try await bindServer()
+            let state = try await bindServer()
+            if tailnetEnabled {
+                await refreshTailnet()
+                startTailnetPoll()
+            }
+            return state
         } catch {
             await performStop()
             if let error = error as? AgentDropError { throw error }
@@ -150,6 +181,9 @@ public actor AgentDropService {
     }
 
     private func performStop() async {
+        stopTailnetPoll()
+        await stopTailnetListener()
+        setTailnetState(tailnetEnabled ? .waiting : .off)
         await server?.stop()
         await hub?.close()
         watcher?.stop()
@@ -177,5 +211,115 @@ public actor AgentDropService {
             state = .noPort
         }
         return state
+    }
+
+    // MARK: Tailnet listener
+
+    private func performSetTailnet(enabled: Bool) async -> TailnetState {
+        tailnetEnabled = enabled
+        if !enabled {
+            stopTailnetPoll()
+            await stopTailnetListener()
+            setTailnetState(.off)
+        } else if store == nil {
+            setTailnetState(.waiting)
+        } else {
+            await refreshTailnet()
+            startTailnetPoll()
+        }
+        return tailnetState
+    }
+
+    /// Brings the listener in line with the current identity: unchanged and listening
+    /// leaves it alone; otherwise it's stopped and, if there is an identity, rebound.
+    private func refreshTailnet() async {
+        guard tailnetEnabled, let store else { return }
+        let identity = await options.tailnetLocator.locate()
+        if tailnetServer != nil, let bound = tailnetIdentity, let identity, Self.sameTailnet(identity, as: bound) {
+            return
+        }
+        await stopTailnetListener()
+        guard let identity else {
+            setTailnetState(.notConnected)
+            return
+        }
+        await bindTailnet(store: store, identity: identity, recheck: true)
+    }
+
+    /// Every bind failure is `PortInUse`, but when Tailscale just went away the real cause
+    /// is the missing address. So on failure, look once more before reporting the port.
+    private func bindTailnet(store: DropStore, identity: TailnetIdentity, recheck: Bool) async {
+        let settings = try? config.load()
+        let configured = settings?.tailnetPort ?? AgentDropConfig.defaultTailnetPort
+        let port = (1...65535).contains(configured) ? configured : AgentDropConfig.defaultTailnetPort
+        let maxBytes = settings?.tailnetMaxBytes ?? AgentDropConfig.defaultTailnetMaxBytes
+        let keyFile = TailnetKeyFile(configDir: config.configDir)
+        do {
+            let server = try await TailnetServer.start(
+                store: store, bindHost: options.tailnetBindHost?(identity) ?? identity.address, port: port,
+                identity: identity, limits: .init(maxBytes: maxBytes), key: { keyFile.read() },
+                peerAllowed: options.tailnetPeerAllowed)
+            tailnetServer = server
+            tailnetIdentity = identity
+            setTailnetState(.receiving(host: identity.preferredHost, port: port))
+        } catch {
+            guard recheck else {
+                setTailnetState(.portInUse(port))
+                return
+            }
+            switch await options.tailnetLocator.locate() {
+            case nil:
+                setTailnetState(.notConnected)
+            case let now? where !Self.sameTailnet(now, as: identity):
+                await bindTailnet(store: store, identity: now, recheck: false)
+            default:
+                setTailnetState(.portInUse(port))
+            }
+        }
+    }
+
+    /// Whether `located` calls for no new listener over one for `bound`. The name comes from
+    /// `tailscale status`, which can fail on its own, so a missing name at the same address
+    /// is not a change: rebinding then would cut uploads and refuse MagicDNS `Host`s.
+    private static func sameTailnet(_ located: TailnetIdentity, as bound: TailnetIdentity) -> Bool {
+        located.address == bound.address && (located.dnsName == nil || located.dnsName == bound.dnsName)
+    }
+
+    private func stopTailnetListener() async {
+        await tailnetServer?.stop()
+        tailnetServer = nil
+        tailnetIdentity = nil
+    }
+
+    /// Sleeps off the actor; each poll goes through `serially` so it never interleaves
+    /// with start, stop or a toggle.
+    private func startTailnetPoll() {
+        stopTailnetPoll()
+        let generation = tailnetPollGeneration
+        let interval = options.tailnetPoll
+        tailnetPollTask = Task.detached { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let service = self else { return }
+                _ = try? await service.serially { await $0.pollTailnet(generation: generation) }
+            }
+        }
+    }
+
+    private func stopTailnetPoll() {
+        tailnetPollGeneration += 1
+        tailnetPollTask?.cancel()
+        tailnetPollTask = nil
+    }
+
+    private func pollTailnet(generation: Int) async {
+        guard generation == tailnetPollGeneration else { return }
+        await refreshTailnet()
+    }
+
+    private func setTailnetState(_ new: TailnetState) {
+        guard new != tailnetState else { return }
+        tailnetState = new
+        options.onTailnetChange(new)
     }
 }
