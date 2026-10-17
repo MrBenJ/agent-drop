@@ -16,6 +16,8 @@ public enum DropPack {
 
     static let magic = Data("ADPK1\n".utf8)
     static let maxPathBytes = 4096
+    /// Cap on d + f records per pack, so an untrusted sender can't amplify inodes/memory with empty entries.
+    public static let maxEntries = 10_000
     private static let chunk = 64 * 1024
 
     // MARK: - Write
@@ -112,6 +114,7 @@ public enum DropPack {
         var seen = Set<String>()
         var directories = Set<String>()
         var total: Int64 = 0
+        var entries = 0
 
         while true {
             let type = try readExactly(input, 1)[0]
@@ -123,6 +126,10 @@ public enum DropPack {
             }
             guard type == UInt8(ascii: "d") || type == UInt8(ascii: "f") else {
                 throw Failure.malformed("Unknown record type \(type)")
+            }
+            entries += 1
+            guard entries <= maxEntries else {
+                throw Failure.malformed("too many entries (limit \(maxEntries))")
             }
             let length = try be32(readExactly(input, 4))
             guard length <= maxPathBytes else { throw Failure.malformed("Path too long") }

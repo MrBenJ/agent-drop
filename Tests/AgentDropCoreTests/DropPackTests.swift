@@ -170,4 +170,16 @@ struct DropPackTests {
         _ = dir
         #expect(try String(contentsOf: dest.appendingPathComponent("x/y.txt"), encoding: .utf8) == "hi")
     }
+
+    @Test func unpackRejectsTooManyEntries() throws {
+        let records = (0...DropPack.maxEntries).map { (D, "d\($0)", nil as Data?) } + [(E, "", nil as Data?)]
+        try expectMalformed(pack(records))
+    }
+
+    @Test func unpackAcceptsExactlyMaxEntries() throws {
+        let records = (0..<DropPack.maxEntries).map { (D, "d\($0)", nil as Data?) } + [(E, "", nil as Data?)]
+        let (dir, dest) = try unpack(pack(records))
+        _ = dir
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dest.path).count == DropPack.maxEntries)
+    }
 }
