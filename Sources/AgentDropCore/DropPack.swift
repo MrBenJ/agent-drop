@@ -23,7 +23,17 @@ public enum DropPack {
     // MARK: - Write
 
     /// Rejects (AgentDropError.invalid) a source folder containing anything but regular files and directories.
+    /// The tree is walked through no-follow descriptors, so an entry swapped for a symlink mid-walk is
+    /// refused rather than followed out of the folder.
     public static func write(folder: URL, to output: URL) throws {
+        try write(folder: folder, to: output, afterEntryCheck: nil)
+    }
+
+    /// `afterEntryCheck` is a test hook run after an entry's type is checked, before it is opened.
+    static func write(folder: URL, to output: URL, afterEntryCheck: ((URL) -> Void)?) throws {
+        let root = open(folder.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard root >= 0 else { throw AgentDropError.invalid("Can't read \(folder.path)") }
+        defer { close(root) }
         let fm = FileManager.default
         guard fm.createFile(atPath: output.path, contents: nil) else {
             throw AgentDropError.invalid("Can't create \(output.path)")
@@ -31,45 +41,93 @@ public enum DropPack {
         let handle = try FileHandle(forWritingTo: output)
         defer { try? handle.close() }
         try handle.write(contentsOf: magic)
-        try writeDirectory(folder, relative: "", to: handle)
+        try writeDirectory(root, url: folder, relative: "", to: handle, hook: afterEntryCheck)
         try handle.write(contentsOf: Data([UInt8(ascii: "e")]))
     }
 
-    private static func writeDirectory(_ dir: URL, relative: String, to out: FileHandle) throws {
-        let fm = FileManager.default
-        let names = try fm.contentsOfDirectory(atPath: dir.path).sorted()
-        for name in names {
+    private static func writeDirectory(_ dirfd: Int32, url dir: URL, relative: String, to out: FileHandle,
+                                       hook: ((URL) -> Void)?) throws {
+        for name in try entryNames(dirfd, relative: relative) {
             let url = dir.appendingPathComponent(name)
             let path = relative.isEmpty ? name : relative + "/" + name
             guard Data(path.utf8).count <= maxPathBytes else {
                 throw AgentDropError.invalid("Path too long to send: \(path)")
             }
-            let attributes = try fm.attributesOfItem(atPath: url.path) // does not follow links
-            switch attributes[.type] as? FileAttributeType {
-            case .typeDirectory:
+            let unsupported = AgentDropError.invalid("Can't send \(path): only regular files and folders are supported")
+            // Check the type without following links, so FIFOs and devices are never opened.
+            var checked = stat()
+            guard fstatat(dirfd, name, &checked, AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw AgentDropError.invalid("Can't read \(path)")
+            }
+            let isDirectory = checked.st_mode & S_IFMT == S_IFDIR
+            guard isDirectory || checked.st_mode & S_IFMT == S_IFREG else { throw unsupported }
+            hook?(url)
+            // Pin the entry: O_NOFOLLOW refuses a swapped-in symlink, and fstat must match what was checked.
+            let fd = openat(dirfd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | (isDirectory ? O_DIRECTORY : 0))
+            guard fd >= 0 else { throw errno == ELOOP ? unsupported : AgentDropError.invalid("Can't read \(path)") }
+            defer { close(fd) }
+            var opened = stat()
+            guard fstat(fd, &opened) == 0 else { throw AgentDropError.invalid("Can't read \(path)") }
+            guard opened.st_mode & S_IFMT == checked.st_mode & S_IFMT,
+                  opened.st_dev == checked.st_dev, opened.st_ino == checked.st_ino else {
+                throw AgentDropError.invalid("\(path) changed while it was being read")
+            }
+            if isDirectory {
                 try out.write(contentsOf: header("d", path))
-                try writeDirectory(url, relative: path, to: out)
-            case .typeRegular:
-                let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+                try writeDirectory(fd, url: url, relative: path, to: out, hook: hook)
+            } else {
+                let size = UInt64(max(opened.st_size, 0))
                 try out.write(contentsOf: header("f", path) + be64(size))
-                try copy(url, count: size, to: out)
-            default:
-                throw AgentDropError.invalid("Can't send \(path): only regular files and folders are supported")
+                try copy(fd, path: path, count: size, to: out)
             }
         }
     }
 
-    private static func copy(_ file: URL, count: UInt64, to out: FileHandle) throws {
-        let input = try FileHandle(forReadingFrom: file)
-        defer { try? input.close() }
+    /// The directory's entry names (minus . and ..), sorted, read through a dup of the pinned descriptor.
+    private static func entryNames(_ dirfd: Int32, relative: String) throws -> [String] {
+        let failure = AgentDropError.invalid("Can't list \(relative.isEmpty ? "the folder" : relative)")
+        let copy = dup(dirfd)
+        guard copy >= 0 else { throw failure }
+        guard let stream = fdopendir(copy) else {
+            close(copy)
+            throw failure
+        }
+        defer { closedir(stream) } // also closes `copy`
+        var names: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                if errno != 0 { throw failure }
+                break
+            }
+            let name = withUnsafeBytes(of: entry.pointee.d_name) { raw in
+                String(decoding: raw.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
+            }
+            if name != "." && name != ".." { names.append(name) }
+        }
+        return names.sorted()
+    }
+
+    /// Copies exactly `count` bytes from `fd`; a file that shrinks or grows meanwhile is refused.
+    private static func copy(_ fd: Int32, path: String, count: UInt64, to out: FileHandle) throws {
+        let changed = AgentDropError.invalid("\(path) changed while it was being read")
+        var buffer = [UInt8](repeating: 0, count: chunk)
         var remaining = count
         while remaining > 0 {
             let want = Int(min(UInt64(chunk), remaining))
-            guard let data = try input.read(upToCount: want), !data.isEmpty else {
-                throw AgentDropError.invalid("\(file.lastPathComponent) changed while it was being read")
-            }
-            try out.write(contentsOf: data)
-            remaining -= UInt64(data.count)
+            let got = try readSome(fd, &buffer, want, path: path)
+            guard got > 0 else { throw changed }
+            try out.write(contentsOf: Data(buffer[0..<got]))
+            remaining -= UInt64(got)
+        }
+        guard try readSome(fd, &buffer, 1, path: path) == 0 else { throw changed }
+    }
+
+    private static func readSome(_ fd: Int32, _ buffer: inout [UInt8], _ count: Int, path: String) throws -> Int {
+        while true {
+            let got = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, count) }
+            if got >= 0 { return got }
+            guard errno == EINTR else { throw AgentDropError.invalid("Can't read \(path)") }
         }
     }
 

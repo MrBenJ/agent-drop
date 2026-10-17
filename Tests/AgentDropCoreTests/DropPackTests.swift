@@ -107,6 +107,49 @@ struct DropPackTests {
         }
     }
 
+    /// Packs `src` while `swap` runs after each entry is checked; the secret must never be packed.
+    private func expectSecretNotPacked(_ src: TempDir, secret: Data, swap: @escaping (URL) -> Void,
+                                       sourceLocation: SourceLocation = #_sourceLocation) throws {
+        let work = try TempDir()
+        let packFile = work.url.appendingPathComponent("p.adpk")
+        do {
+            try DropPack.write(folder: src.url, to: packFile, afterEntryCheck: swap)
+        } catch let error as AgentDropError {
+            #expect(error.exitCode == 1, "message: \(error.message)", sourceLocation: sourceLocation)
+            return
+        }
+        let packed = try Data(contentsOf: packFile)
+        #expect(packed.range(of: secret) == nil, "pack contains the outside secret", sourceLocation: sourceLocation)
+    }
+
+    @Test func writeDoesNotFollowFileSwappedForSymlink() throws {
+        let outside = try TempDir()
+        let secret = Data("TOP-SECRET-FILE-BYTES".utf8)
+        let target = try outside.data("secret.txt", secret)
+        let src = try TempDir()
+        // Same length as the secret, so a size-bounded read through the link would copy all of it.
+        try src.data("a.txt", Data(repeating: UInt8(ascii: "o"), count: secret.count))
+        try expectSecretNotPacked(src, secret: secret) { url in
+            guard url.lastPathComponent == "a.txt" else { return }
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
+        }
+    }
+
+    @Test func writeDoesNotFollowDirectorySwappedForSymlink() throws {
+        let outside = try TempDir()
+        let secret = Data("TOP-SECRET-DIR-BYTES".utf8)
+        try outside.data("secret.txt", secret)
+        let src = try TempDir()
+        try src.file("sub/inner.txt", "inner")
+        try expectSecretNotPacked(src, secret: secret) { url in
+            guard url.lastPathComponent == "sub" else { return }
+            let fm = FileManager.default
+            try? fm.moveItem(at: url, to: url.deletingLastPathComponent().appendingPathComponent("sub-moved"))
+            try? fm.createSymbolicLink(at: url, withDestinationURL: outside.url)
+        }
+    }
+
     @Test(arguments: ["../escape", "/abs", "a/../b", "a//b", "./a", "", "a\u{0}b"])
     func unpackRejectsBadPaths(_ path: String) throws {
         try expectMalformed(pack([(F, path, Data("x".utf8)), (E, "", nil)]))
