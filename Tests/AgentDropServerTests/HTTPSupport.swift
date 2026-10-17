@@ -92,7 +92,8 @@ struct TailnetFixture {
     var host: String { "laptop.tail-test.ts.net:\(port)" }
     var stagingRoot: URL { store.folder.appendingPathComponent(".agentdrop/staging", isDirectory: true) }
 
-    init(maxBytes: Int64 = 1 << 20, peerAllowed: @escaping @Sendable (String) -> Bool = { $0 == "127.0.0.1" })
+    init(maxBytes: Int64 = 1 << 20, identity: TailnetIdentity = TailnetFixture.identity,
+         peerAllowed: @escaping @Sendable (String) -> Bool = { $0 == "127.0.0.1" })
         async throws {
         let store = try StoreFixture()
         let key = Locked<String?>(ServerInfo.newToken())
@@ -105,7 +106,7 @@ struct TailnetFixture {
         for port in base..<(base + 10) {
             do {
                 started = try await TailnetServer.start(
-                    store: store.store, bindHost: "127.0.0.1", port: port, identity: Self.identity,
+                    store: store.store, bindHost: "127.0.0.1", port: port, identity: identity,
                     limits: .init(maxBytes: maxBytes), key: { key.value }, peerAllowed: peerAllowed,
                     freeBytes: { _ in free.value })
                 break
