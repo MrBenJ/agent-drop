@@ -113,6 +113,50 @@ struct RemoteCommandTests {
         #expect(try RemotesFile(configDir: env.config.configDir).load()["desk"] == nil)
     }
 
+    /// Runs each closure on its own thread, all released together.
+    private func runConcurrently(_ jobs: [@Sendable () -> Void]) {
+        let barrier = DispatchSemaphore(value: 0)
+        let done = DispatchGroup()
+        for job in jobs {
+            done.enter()
+            Thread.detachNewThread {
+                barrier.wait()
+                job()
+                done.leave()
+            }
+        }
+        jobs.forEach { _ in barrier.signal() }
+        done.wait()
+    }
+
+    @Test func concurrentUpdatesLoseNothing() throws {
+        let env = try TestEnv()
+        let dir = env.config.configDir
+        let remote = TailnetClient.Remote(url: URL(string: "http://100.64.0.2:47400")!, key: sampleKey)
+        runConcurrently((0..<20).map { i in
+            { try? RemotesFile(configDir: dir).update { $0["r\(i)"] = remote } }
+        })
+        #expect(Set(try RemotesFile(configDir: dir).load().keys) == Set((0..<20).map { "r\($0)" }))
+    }
+
+    @Test func concurrentAddAndRemovePreserveUnrelatedEntries() throws {
+        let env = try TestEnv()
+        let dir = env.config.configDir
+        let remote = TailnetClient.Remote(url: URL(string: "http://100.64.0.2:47400")!, key: sampleKey)
+        try RemotesFile(configDir: dir).update { remotes in
+            for i in 0..<10 { remotes["old\(i)"] = remote }
+        }
+        var jobs: [@Sendable () -> Void] = (0..<10).map { i in
+            { try? RemotesFile(configDir: dir).update { $0["new\(i)"] = remote } }
+        }
+        for i in 0..<5 {
+            jobs.append { _ = try? RemotesFile(configDir: dir).update { $0.removeValue(forKey: "old\(i)") } }
+        }
+        runConcurrently(jobs)
+        let expected = Set((0..<10).map { "new\($0)" } + (5..<10).map { "old\($0)" })
+        #expect(Set(try RemotesFile(configDir: dir).load().keys) == expected)
+    }
+
     @Test func remoteResponseIsSanitized() throws {
         let body = Data(#"{"id":"ab\u001b[31mcd","from":"aria","isFolder":false,"title":"x/y"}"#.utf8)
         let plain = try Add.formatRemoteResponse(body, json: false, remoteName: "laptop")

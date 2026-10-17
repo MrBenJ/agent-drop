@@ -30,9 +30,7 @@ struct RemoteCommand: ParsableCommand {
                 throw AgentDropError.invalid("The key must be 64 hex characters (copy it from the receiving Mac's Agent Drop Settings)")
             }
             let file = RemotesFile(configDir: context.config.configDir)
-            var remotes = try file.load()
-            remotes[name] = TailnetClient.Remote(url: remoteURL, key: key)
-            try file.save(remotes)
+            try file.update { $0[name] = TailnetClient.Remote(url: remoteURL, key: key) }
             if output.json {
                 Output.emitJSON(RemoteSummary(name: name, url: remoteURL.absoluteString))
             } else {
@@ -64,11 +62,11 @@ struct RemoteCommand: ParsableCommand {
 
         func run() throws {
             let file = RemotesFile(configDir: CLIContext.current.config.configDir)
-            var remotes = try file.load()
-            guard remotes.removeValue(forKey: name) != nil else {
-                throw AgentDropError.notFound("No remote named '\(name)'")
+            try file.update { remotes in
+                guard remotes.removeValue(forKey: name) != nil else {
+                    throw AgentDropError.notFound("No remote named '\(name)'")
+                }
             }
-            try file.save(remotes)
             if output.json {
                 Output.emitJSON(["removed": name])
             } else {

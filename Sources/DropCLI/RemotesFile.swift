@@ -32,6 +32,35 @@ public struct RemotesFile {
         }
     }
 
+    /// Load, mutate and save as one transaction under an exclusive `flock` on
+    /// `remotes.json.lock`, so concurrent `drop remote add/remove` processes can't lose
+    /// each other's changes. Nothing is saved if `body` throws.
+    @discardableResult
+    public func update<T>(_ body: (inout [String: TailnetClient.Remote]) throws -> T) throws -> T {
+        let lockURL = url.appendingPathExtension("lock")
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        } catch {
+            throw AgentDropError.invalid("Can't create \(url.deletingLastPathComponent().path): \(error.localizedDescription)")
+        }
+        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        guard fd >= 0 else {
+            throw AgentDropError.invalid("Can't open \(lockURL.path): \(String(cString: strerror(errno)))")
+        }
+        defer { close(fd) } // closing releases the lock
+        while flock(fd, LOCK_EX) != 0 {
+            guard errno == EINTR else {
+                throw AgentDropError.invalid("Can't lock \(lockURL.path): \(String(cString: strerror(errno)))")
+            }
+        }
+        var remotes = try load()
+        let result = try body(&remotes)
+        try save(remotes)
+        return result
+    }
+
     public func save(_ remotes: [String: TailnetClient.Remote]) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
