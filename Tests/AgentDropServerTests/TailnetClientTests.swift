@@ -123,4 +123,18 @@ struct TailnetClientTests {
             #expect(message.contains("MB limit"))
         }
     }
+
+    @Test func largeOverLimitUploadIsNotReportedAsUnreachable() async throws {
+        let s = try await TailnetFixture(maxBytes: 1000, identity: loopbackIdentity)
+        defer { Task { await s.server.stop() } }
+        let file = s.store.dir.url.appendingPathComponent("big.bin")
+        try Data(count: 8 * 1024 * 1024).write(to: file)
+        do {
+            _ = try await client(s).send(.file(file), metadata("big.bin"))
+            Issue.record("expected a failure")
+        } catch let AgentDropError.invalid(message) {
+            #expect(!message.hasPrefix("Can't reach"), "\(message)")
+            #expect(message.contains("MB limit") || message.hasPrefix("Lost the connection to 'laptop'"), "\(message)")
+        }
+    }
 }
