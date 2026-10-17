@@ -38,7 +38,7 @@ cat > "$stage/INSTALL.txt" <<TXT
 Agent Drop $version (macOS 14 or later, Apple silicon and Intel)
 
 1. Install the app:  cp -R AgentDrop.app /Applications/
-2. Install the CLI:  cp drop /usr/local/bin/drop     (or any directory on your PATH; may need sudo)
+2. Install the CLI:  rm -f /usr/local/bin/drop; cp drop /usr/local/bin/drop     (or any directory on your PATH; may need sudo; remove first, macOS kills a signed binary overwritten in place)
 3. These builds are ad-hoc signed, not notarized. macOS quarantines browser downloads,
    so clear that once (or right-click AgentDrop.app in Finder → Open, and confirm):
      xattr -dr com.apple.quarantine /Applications/AgentDrop.app /usr/local/bin/drop
