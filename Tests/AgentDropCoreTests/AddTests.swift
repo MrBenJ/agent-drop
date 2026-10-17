@@ -44,7 +44,7 @@ struct AddTests {
         })
         let registrar = try DropStore.open(folder: f.folder, retention: .default)
         finished.enter()
-        DispatchQueue.global().async {
+        onOwnThread {
             defer { finished.leave() }
             do {
                 let drop = try copier.add(AddRequest(source: .path(source), from: "copier"))
@@ -55,7 +55,7 @@ struct AddTests {
         }
         #expect(placed.wait(timeout: .now() + 5) == .success)
         finished.enter()
-        DispatchQueue.global().async {
+        onOwnThread {
             defer { registrationFinished.signal(); finished.leave() }
             do {
                 let drop = try registrar.add(AddRequest(

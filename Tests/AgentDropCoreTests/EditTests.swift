@@ -21,7 +21,7 @@ struct EditTests {
         }
         for store in stores {
             finished.enter()
-            DispatchQueue.global().async {
+            onOwnThread {
                 defer { finished.leave() }
                 do {
                     try store.removeRecord(drop.id)
