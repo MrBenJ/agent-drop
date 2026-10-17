@@ -150,8 +150,9 @@ struct EntryDetailView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(entry.name).font(.title2.weight(.semibold)).textSelection(.enabled)
                 Text("Unregistered: this \(entry.isFolder ? "folder" : "file") is in the drop folder but has no record. Register it here, or have an agent run `drop add \(entry.name)` from the drop folder.")
+                    // No .fixedSize here: in the split view's detail column it stops SwiftUI
+                    // drawing the whole window (macOS 26). The text wraps without it.
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("Register…") { registering = true }.buttonStyle(.borderedProminent)
                     Button("Reveal in Finder") {
