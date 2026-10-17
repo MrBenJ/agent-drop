@@ -195,7 +195,9 @@ struct TailnetReceiver: Sendable {
 
         let declared = request.headers[.contentLength].flatMap { Int64($0) }
         if let declared, declared > limits.maxBytes { throw tooLarge }
-        if let free = freeBytes(store.folder), free - (declared ?? 0) < limits.minFreeBytes {
+        // A folder holds the pack and its unpacked tree at once: count it twice.
+        let needed = (declared ?? 0) * (upload.kind == .folder ? 2 : 1)
+        if let free = freeBytes(store.folder), free - needed < limits.minFreeBytes {
             throw APIError(HTTPResponse.Status(code: 507, reasonPhrase: "Insufficient Storage"),
                            "Not enough free disk space on the receiving Mac")
         }

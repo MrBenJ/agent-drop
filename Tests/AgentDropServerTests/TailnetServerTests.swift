@@ -269,6 +269,30 @@ struct TailnetUploadTests {
         #expect(try await s.send("POST", fileDrop, body: Data(repeating: 0x61, count: 100)).status == 201)
     }
 
+    /// A folder upload holds the pack and its unpacked tree at once, so it needs twice its
+    /// declared size free; a file needs it once.
+    @Test func folderUploadNeedsTwiceItsSizeFree() async throws {
+        let s = try await TailnetFixture()
+        defer { Task { await s.server.stop() } }
+        let source = s.store.dir.url.appendingPathComponent("notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data(repeating: 0x61, count: 4000).write(to: source.appendingPathComponent("a.txt"))
+        let packFile = s.store.dir.url.appendingPathComponent("notes.adpk")
+        try DropPack.write(folder: source, to: packFile)
+        let pack = try Data(contentsOf: packFile)
+        let size = Int64(pack.count)
+
+        s.free.withLock { $0 = (1 << 30) + size + size / 2 } // enough for 1×, not 2×
+        let folder = try await s.send("POST", "/drops?kind=folder&name=notes&from=aria", body: pack)
+        #expect(folder.status == 507)
+        #expect(s.stagingEntries().isEmpty)
+        let file = try await s.send("POST", "/drops?kind=file&name=notes.adpk&from=aria", body: pack)
+        #expect(file.status == 201)
+
+        s.free.withLock { $0 = (1 << 30) + 2 * size }
+        #expect(try await s.send("POST", "/drops?kind=folder&name=notes&from=aria", body: pack).status == 201)
+    }
+
     /// Headers and the first chunk of a chunked upload, then nothing.
     private func stalledUpload(_ s: TailnetFixture, name: String) async throws -> RawConnection {
         let connection = try await rawHTTPConnection(port: s.port)
