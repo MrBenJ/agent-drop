@@ -28,12 +28,16 @@ public enum Retention: Equatable, Sendable {
 
 public struct AgentDropConfig: Equatable, Sendable {
     public static let defaultServerPort = 47390
+    public static let defaultTailnetPort = 47400
+    public static let defaultTailnetMaxBytes: Int64 = 200 * 1024 * 1024
 
     public var folder: String? = nil
     public var eventRetentionDays: Retention = .default
     /// True when config.json held an invalid retention value (treated as 30; spec §5.1).
     public var retentionWasInvalid = false
     public var serverPort: Int? = nil
+    public var tailnetPort: Int? = nil
+    public var tailnetMaxBytes: Int64? = nil
     public var setupComplete = false
     public var confirmedFolder: String? = nil
 
@@ -78,6 +82,10 @@ public struct ConfigStore: Sendable {
             config.retentionWasInvalid = true
         }
         config.serverPort = dict["serverPort"] as? Int
+        config.tailnetPort = dict["tailnetPort"] as? Int
+        if let max = (dict["tailnetMaxBytes"] as? NSNumber).map({ $0.int64Value }), max > 0 {
+            config.tailnetMaxBytes = max
+        }
         config.setupComplete = dict["setupComplete"] as? Bool ?? false
         config.confirmedFolder = dict["confirmedFolder"] as? String
         return config

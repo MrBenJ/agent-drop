@@ -203,4 +203,62 @@ struct AddTests {
         expectError(1) { _ = try f.store.add(AddRequest(source: .path(src), project: "a\nb", from: "t")) }
         #expect(!fm.fileExists(atPath: f.folder.appendingPathComponent("p.md").path))
     }
+
+    // MARK: staged source
+
+    private func stagedFile(_ f: Fixture, _ contents: String = "# Hello\n") throws -> URL {
+        let url = try f.store.makeStagingDirectory().appendingPathComponent("content")
+        try Data(contents.utf8).write(to: url)
+        return url
+    }
+
+    @Test func stagedFileIsPlacedLikeACopy() throws {
+        let f = try Fixture()
+        let url = try stagedFile(f, "# Hello\n")
+        let drop = try f.store.add(AddRequest(source: .staged(url, isFolder: false), name: "plan.md", from: "aria"))
+        #expect(drop.filename == "plan.md")
+        #expect(drop.title == "Hello")
+        #expect(fm.fileExists(atPath: f.folder.appendingPathComponent("plan.md").path))
+        #expect(try f.store.events().filter { $0.type == .created }.count == 1)
+    }
+
+    @Test func stagedFolderWorks() throws {
+        let f = try Fixture()
+        let dir = try f.store.makeStagingDirectory().appendingPathComponent("content", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("# Inside\n".utf8).write(to: dir.appendingPathComponent("README.md"))
+        let drop = try f.store.add(AddRequest(source: .staged(dir, isFolder: true), name: "bundle", from: "aria"))
+        #expect(drop.isFolder)
+        #expect(drop.filename == "bundle")
+        #expect(fm.fileExists(atPath: f.folder.appendingPathComponent("bundle/README.md").path))
+    }
+
+    @Test func stagedNameCollisionGetsSuffix() throws {
+        let f = try Fixture()
+        try f.add("plan.md")
+        let url = try stagedFile(f)
+        let drop = try f.store.add(AddRequest(source: .staged(url, isFolder: false), name: "plan.md", from: "aria"))
+        #expect(drop.filename == "plan-2.md")
+    }
+
+    @Test func stagedOutsideStagingIsRejected() throws {
+        let f = try Fixture()
+        let outside = try f.outside("x.md")
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(outside, isFolder: false), name: "x.md", from: "a")) }
+        #expect(fm.fileExists(atPath: outside.path))
+    }
+
+    @Test func stagedWithoutNameIsRejected() throws {
+        let f = try Fixture()
+        let url = try stagedFile(f)
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(url, isFolder: false), from: "a")) }
+    }
+
+    @Test func stagedWithMoveIsRejected() throws {
+        let f = try Fixture()
+        let url = try stagedFile(f)
+        expectError(1) {
+            _ = try f.store.add(AddRequest(source: .staged(url, isFolder: false), name: "p.md", from: "a", move: true))
+        }
+    }
 }
