@@ -78,3 +78,11 @@ final class PortBlocker: @unchecked Sendable {
 
     deinit { release() }
 }
+
+/// Runs blocking test work (a burst of CLI store writes) on a thread of its own. On the
+/// main actor it would stall every other `@MainActor` test and the models they drive.
+func offMainActor<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        Thread.detachNewThread { continuation.resume(with: Result { try body() }) }
+    }
+}

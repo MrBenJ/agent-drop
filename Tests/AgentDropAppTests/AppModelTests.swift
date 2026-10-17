@@ -344,11 +344,14 @@ struct AppModelLinkTests {
         let model = f.model()
         await model.launch()
         let cli = try DropStore.open(folder: f.defaultFolder, retention: .default)
-        for i in 0..<60 {
-            let source = f.scratch.url.appendingPathComponent("burst/\(i).md")
-            try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data("# \(i)".utf8).write(to: source)
-            _ = try cli.add(AddRequest(source: .path(source), from: "agent"))
+        let burst = f.scratch.url.appendingPathComponent("burst", isDirectory: true)
+        try await offMainActor {
+            for i in 0..<60 {
+                let source = burst.appendingPathComponent("\(i).md")
+                try FileManager.default.createDirectory(at: burst, withIntermediateDirectories: true)
+                try Data("# \(i)".utf8).write(to: source)
+                _ = try cli.add(AddRequest(source: .path(source), from: "agent"))
+            }
         }
         #expect(await eventually { model.library.drops.count == 60 })
         await f.stopAll()
