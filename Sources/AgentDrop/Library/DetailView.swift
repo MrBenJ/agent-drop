@@ -14,6 +14,8 @@ struct DetailView: View {
         } else if let store = library.store, let entry = library.selectedEntry {
             EntryDetailView(library: library, entry: entry, folder: store.folder)
                 .id(store.folder.path + "/" + entry.name)
+        } else if library.selection.count > 1 {
+            MultipleSelectionView(library: library)
         } else {
             ContentUnavailableView("Select a drop", systemImage: "tray")
         }
@@ -71,7 +73,7 @@ struct DropDetailView: View {
 
     private var actions: some View {
         HStack(spacing: 8) {
-            OpenInCodeButton(url: url, library: library).disabled(drop.missing)
+            OpenInCodeButton(urls: [url], library: library).disabled(drop.missing)
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                 .disabled(drop.missing)
             Menu("Copy") {
@@ -92,7 +94,7 @@ struct DropDetailView: View {
             Menu {
                 Button("Edit Metadata…") { editing = true }
                 Button(drop.archived ? "Unarchive" : "Archive") {
-                    Task { await library.setArchived(drop.id, !drop.archived) }
+                    Task { await library.setArchived([drop.id], !drop.archived) }
                 }
                 if drop.missing {
                     Divider()
@@ -104,6 +106,7 @@ struct DropDetailView: View {
             .menuIndicator(.hidden)
             .fixedSize()
         }
+        .labelStyle(.titleOnly)
         .controlSize(.small)
     }
 }
@@ -170,16 +173,65 @@ struct EntryDetailView: View {
     }
 }
 
+/// Shown when several list rows are selected, like Mail with several messages.
+struct MultipleSelectionView: View {
+    let library: LibraryModel
+
+    private var noun: String { library.drops(in: library.selection).isEmpty ? "files" : "drops" }
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("\(library.selection.count) \(noun) selected", systemImage: "square.stack")
+        } actions: {
+            HStack(spacing: 10) { SelectionActions(library: library, items: library.selection) }
+                .labelStyle(.titleAndIcon)
+                .controlSize(.large)
+                .fixedSize() // full titles, never truncated
+        }
+    }
+}
+
+/// Reveal in Finder, Open in VS Code and Archive for any set of list rows: the list's
+/// context menu, and the detail pane when several are selected.
+struct SelectionActions: View {
+    let library: LibraryModel
+    let items: Set<LibraryModel.Selection>
+
+    var body: some View {
+        let urls = library.urls(for: items)
+        let drops = library.drops(in: items)
+        Button("Reveal in Finder", systemImage: "folder") { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+            .disabled(urls.isEmpty)
+        OpenInCodeButton(urls: urls, library: library).disabled(urls.isEmpty)
+        if !drops.isEmpty {
+            // Unregistered entries have no record to archive.
+            let archive = !drops.allSatisfy(\.archived)
+            if archive {
+                // Red: it takes the drops out of every view but Archived.
+                Button(role: .destructive) {
+                    Task { await library.setArchived(drops.map(\.id), true) }
+                } label: {
+                    Label("Archive", systemImage: "archivebox").foregroundStyle(.red)
+                }
+            } else {
+                Button("Unarchive", systemImage: "tray.and.arrow.up") {
+                    Task { await library.setArchived(drops.map(\.id), false) }
+                }
+            }
+        }
+    }
+}
+
 struct OpenInCodeButton: View {
-    let url: URL
+    let urls: [URL]
     let library: LibraryModel
     @State private var code = CodeLocator.find()
 
     var body: some View {
-        Button("Open in VS Code") {
+        Button("Open in VS Code", systemImage: "chevron.left.forwardslash.chevron.right") {
             guard let code else { return }
             do {
-                try CodeLocator.open(url, with: code)
+                for url in urls { try CodeLocator.open(url, with: code) }
             } catch {
                 library.alert = "Couldn't start VS Code: \(error.localizedDescription)"
             }
