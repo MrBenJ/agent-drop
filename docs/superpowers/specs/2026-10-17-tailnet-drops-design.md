@@ -127,6 +127,10 @@ stray request from some other tailnet service, and gives Ben a switch to revoke 
   - At most **2 uploads in flight**. A third gets 503 "busy".
   - Before streaming, refuse with 507 (or 503, builder's call) if free space on the
     drop folder's volume would fall below 1 GB.
+  - That space is **reserved across in-flight uploads**: each holds its Content-Length
+    (the cap when the length is unknown), twice for a folder, until it ends.
+  - A body that sends nothing for **30 s** closes the connection; the upload fails and
+    its slot, reservation and staging files are freed.
   - No daily or overall quota in v0.2.0.
 - After staging, it goes through the **same `DropStore` add path**. The upload
   handler needs its own internal source type for already-staged files, because the CLI's
