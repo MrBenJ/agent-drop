@@ -207,6 +207,16 @@ struct TailnetUploadTests {
         #expect(try s.store.store.list(ListFilter()).isEmpty)
     }
 
+    @Test func newlineDenseMarkdownWithoutATitleGetsTheFilenameFallback() async throws {
+        let s = try await TailnetFixture(maxBytes: 4 * 1_048_576)
+        defer { Task { await s.server.stop() } }
+        let response = try await s.send(
+            "POST", "/drops?kind=file&name=big.md&from=agent",
+            body: Data(repeating: UInt8(ascii: "\n"), count: 2 * 1_048_576))
+        #expect(response.status == 201)
+        #expect(response.json["title"] == .string("big"))
+    }
+
     @Test func oversizeMessageNamesTheLimitInMegabytes() async throws {
         let s = try await TailnetFixture(maxBytes: 3 * 1_048_576)
         defer { Task { await s.server.stop() } }

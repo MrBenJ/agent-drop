@@ -2,6 +2,11 @@ import Foundation
 
 /// Default titles (spec §3 data model `title`).
 enum TitleExtractor {
+    /// How much of a file is scanned for a heading; anything later is ignored.
+    static let maxScanBytes = 64 * 1024
+    /// Longest title returned from a heading, in characters.
+    static let maxTitleLength = 200
+
     static func title(for url: URL, isFolder: Bool) -> String? {
         if isFolder {
             let fm = FileManager.default
@@ -24,15 +29,21 @@ enum TitleExtractor {
     }
 
     private static func firstHeading(in url: URL) -> String? {
-        guard let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        for line in text.components(separatedBy: .newlines) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: maxScanBytes), !data.isEmpty else { return nil }
+        // Lossy decoding tolerates a multi-byte sequence cut at the prefix boundary.
+        let text = String(decoding: data, as: UTF8.self)
+        var found: String?
+        text.enumerateLines { line, stop in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("# ") else { continue }
+            guard trimmed.hasPrefix("# ") else { return }
             let heading = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
-            if !heading.isEmpty { return heading }
+            if !heading.isEmpty {
+                found = String(heading.prefix(maxTitleLength)).trimmingCharacters(in: .whitespaces)
+                stop = true
+            }
         }
-        return nil
+        return found
     }
 }
