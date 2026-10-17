@@ -50,21 +50,18 @@ struct BoundServer: Sendable {
     let task: Task<Void, Error>
 
     /// Shuts the server down gracefully. If that takes more than 2 s (a stuck
-    /// connection), the server task is cancelled.
+    /// connection, e.g. a sender holding a partial body), the server task is cancelled.
+    /// The timer is unstructured on purpose: a task group would have to join the child
+    /// awaiting `task.value` before it could cancel `task`, so it would never get there.
     func stop() async {
         await group.triggerGracefulShutdown()
         let task = task
-        let finished = await withTaskGroup(of: Bool.self) { group in
-            group.addTask { _ = try? await task.value; return true }
-            group.addTask { try? await Task.sleep(for: .seconds(2)); return false }
-            let first = await group.next()!
-            group.cancelAll()
-            return first
-        }
-        if !finished {
+        let timer = Task {
+            try await Task.sleep(for: .seconds(2))
             task.cancel()
-            _ = try? await task.value
         }
+        _ = try? await task.value
+        timer.cancel()
     }
 }
 

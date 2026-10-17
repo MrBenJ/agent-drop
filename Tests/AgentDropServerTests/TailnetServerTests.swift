@@ -357,4 +357,21 @@ struct TailnetUploadTests {
         // The cut-off uploads never become (truncated) drops.
         #expect(try s.store.store.list(ListFilter()).map(\.filename) == ["three.txt"])
     }
+
+    /// A sender that never finishes its body can't hold shutdown up past the 2 s grace.
+    @Test func stopDoesNotWaitForAStalledUpload() async throws {
+        let s = try await TailnetFixture()
+        let stalled = try await stalledUpload(s, name: "one.txt")
+        defer { stalled.close() }
+        #expect(await eventually { s.stagingEntries().count == 1 })
+
+        let stopped = Locked(false)
+        Task {
+            await s.server.stop()
+            stopped.withLock { $0 = true }
+        }
+        #expect(await eventually(timeout: .seconds(5)) { stopped.value })
+        #expect(await eventually(timeout: .seconds(2)) { s.stagingEntries().isEmpty })
+        #expect(try s.store.store.list(ListFilter()).isEmpty)
+    }
 }

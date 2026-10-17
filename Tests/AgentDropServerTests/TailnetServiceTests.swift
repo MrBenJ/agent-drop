@@ -84,6 +84,31 @@ struct TailnetServiceTests {
         #expect(f.states.value == [f.receiving, .off])
     }
 
+    /// A stalled upload can't keep the listener (and the service's serialized queue) from stopping.
+    @Test func disablingDoesNotWaitForAStalledUpload() async throws {
+        let f = try TailnetServiceFixture()
+        _ = try await f.service.start()
+        defer { Task { await f.service.stop() } }
+        #expect(await f.service.setTailnet(enabled: true) == f.receiving)
+        let stalled = try await rawHTTPConnection(port: f.port)
+        defer { stalled.close() }
+        try await stalled.send("POST /drops?kind=file&name=one.txt&from=aria HTTP/1.1\r\n"
+            + "Host: laptop.tail-test.ts.net:\(f.port)\r\nAuthorization: Bearer \(try f.key())\r\n"
+            + "Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n")
+        let staging = f.base.folder.appendingPathComponent(".agentdrop/staging", isDirectory: true)
+        let entries: @Sendable () -> [String] = { (try? FileManager.default.contentsOfDirectory(atPath: staging.path)) ?? [] }
+        #expect(await eventually { entries().count == 1 })
+
+        let disabled = Locked(false)
+        Task {
+            _ = await f.service.setTailnet(enabled: false)
+            disabled.withLock { $0 = true }
+        }
+        #expect(await eventually(timeout: .seconds(5)) { disabled.value })
+        #expect(await f.service.tailnetState == .off)
+        #expect(await eventually(timeout: .seconds(2)) { entries().isEmpty })
+    }
+
     @Test func enabledBeforeStartWaitsThenReceives() async throws {
         let f = try TailnetServiceFixture()
         #expect(await f.service.setTailnet(enabled: true) == .waiting)
