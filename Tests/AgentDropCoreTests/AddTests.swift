@@ -261,4 +261,38 @@ struct AddTests {
             _ = try f.store.add(AddRequest(source: .staged(url, isFolder: false), name: "p.md", from: "a", move: true))
         }
     }
+
+    @Test func stagedSymlinkEscapingStagingIsRejected() throws {
+        let f = try Fixture()
+        let outside = try f.outside("secret.md", "# Secret\n")
+        let link = try f.store.makeStagingDirectory().appendingPathComponent("content")
+        try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(link, isFolder: false), name: "s.md", from: "a")) }
+        #expect(fm.fileExists(atPath: outside.path))
+        #expect(!fm.fileExists(atPath: f.folder.appendingPathComponent("s.md").path))
+        #expect(try f.store.list(ListFilter()).isEmpty)
+    }
+
+    @Test func stagedDotDotTraversalIsRejected() throws {
+        let f = try Fixture()
+        let staging = try f.store.makeStagingDirectory()
+        let target = f.folder.appendingPathComponent(".agentdrop/x")
+        try Data("# X\n".utf8).write(to: target)
+        let sneaky = URL(fileURLWithPath: staging.path + "/../../x")
+        #expect(fm.fileExists(atPath: sneaky.path))
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(sneaky, isFolder: false), name: "x.md", from: "a")) }
+        #expect(fm.fileExists(atPath: target.path))
+        #expect(try f.store.list(ListFilter()).isEmpty)
+    }
+
+    @Test func stagedSiblingPrefixIsRejected() throws {
+        let f = try Fixture()
+        _ = try f.store.makeStagingDirectory()
+        let evil = f.folder.appendingPathComponent(".agentdrop/staging-evil/x")
+        try fm.createDirectory(at: evil.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("# Evil\n".utf8).write(to: evil)
+        expectError(1) { _ = try f.store.add(AddRequest(source: .staged(evil, isFolder: false), name: "x.md", from: "a")) }
+        #expect(fm.fileExists(atPath: evil.path))
+        #expect(try f.store.list(ListFilter()).isEmpty)
+    }
 }
