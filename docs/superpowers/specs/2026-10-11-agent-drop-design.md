@@ -31,12 +31,12 @@ picks up handoffs left by another agent. Handoff pickup is a core feature, not a
 ### Non-goals (v1)
 
 - Sync across machines, sharing between users, or any service reachable beyond
-  `127.0.0.1` (the local server in §5 is loopback-only).
+  `127.0.0.1` (the local server in §5 is loopback-only). — revised in v0.2.0, see `2026-10-17-tailnet-drops-design.md`
 - Write endpoints on the local server (v1 is read + events only; writes go through the
-  CLI).
+  CLI). — revised in v0.2.0, see `2026-10-17-tailnet-drops-design.md`
 - An MCP server (possible later; the CLI is the universal interface).
 - Addressing handoffs to a specific recipient agent (`--to`). Can be added later as an
-  optional field without breaking anything.
+  optional field without breaking anything. — revised in v0.2.0, see `2026-10-17-tailnet-drops-design.md`
 - Editing file contents inside the app.
 - Homebrew distribution, code signing, and notarization (v1 ships as build-from-source
   plus a GitHub release zip; packaging is a follow-up).

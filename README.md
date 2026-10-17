@@ -4,8 +4,8 @@ A small macOS app + CLI that gives coding agents (Claude Code, Codex, pi, …) a
 drop folder with context: what each file is, why it exists, which project it's from,
 and whether a handoff has been picked up.
 
-**Status:** v0.1: the `drop` CLI, the local server with `drop watch`, and AgentDrop.app
-(menu bar + main window). Download a release or build from source; the app is not notarized yet. See
+**Status:** v0.2: the `drop` CLI, the local server with `drop watch`, AgentDrop.app
+(menu bar + main window), and sending drops from another Mac over Tailscale. Download a release or build from source; the app is not notarized yet. See
 [the design spec](docs/superpowers/specs/2026-10-11-agent-drop-design.md).
 
 ## Install from a release
@@ -64,6 +64,22 @@ buttons). The menu bar icon counts unread drops.
 `--from`, `--by`, `--project` and tags are yours to define. Agent Drop never guesses them.
 Its only convention is `/` as an optional level separator (`drop list --from-under team`).
 
+## Command reference: `drop remote`
+
+```bash
+drop remote add <name> --url <url> --key <key|-> [--json]   # save or replace a remote
+drop remote list [--json]                                   # names and URLs; never keys
+drop remote remove <name> [--json]
+drop remote test <name> [--json]                            # reachable, and key accepted?
+drop add <path|-> --to <remote|env> --from <who> [-m <why>] [--json]
+```
+
+`--key -` reads the key from stdin. With `--json`, `remote add` and `remote test` print
+`{"name": ..., "url": ...}`, `remote remove` prints `{"removed": "<name>"}`, and `remote
+list` prints an array of those objects. Remotes are saved in `remotes.json` in the config
+folder (mode 0600). Remote failures exit 1, except a 404 from the remote, which exits 2.
+`drop agent-instructions` mentions `--to` too.
+
 ## Watching for changes
 
 `drop watch` streams changes from the app's local server (127.0.0.1 only, token-protected):
@@ -93,6 +109,59 @@ while the app is running.
   older than your retention setting (default 30 days). Change it in Settings → Event
   history or with `drop config set-retention <days|forever>`.
 - **Agent Drop never deletes your drops or files.**
+
+## Sending drops from another Mac (Tailscale)
+
+An agent on a second Mac (say a Mac mini) can drop finished work into the Agent Drop on
+your laptop, over [Tailscale](https://tailscale.com). It is off until you turn it on.
+
+**On the receiving Mac:** open Agent Drop → Settings → General → **Tailnet** and switch on
+**Receive drops from my tailnet**. The status line under it says what is going on:
+"Receiving on <host>:<port>", "Tailscale not connected", "Port N is in use", "Starts when
+Agent Drop is serving", or "Off". Click **Copy setup command** to get a line like
+`drop remote add laptop --url http://<host>:47400 --key <key>`. **Regenerate key** makes a
+new key; every sender using the old one stops working until you give it the new one.
+
+**On the sending Mac:** install the `drop` CLI (0.2.0 or newer), then register the receiver
+once. Piping the key keeps it out of your shell history. Copy it in Settings first, then:
+
+```bash
+pbpaste | drop remote add laptop --url http://<host>:47400 --key -
+drop remote test laptop                       # reachable, and the key is accepted
+drop add plan.md --to laptop --from "mini-agent" -m "Plan for the auth refactor"
+```
+
+`drop add --to <remote>` works with files, folders and `-` (stdin, with `--name`). It is
+fire-and-forget: the drop is saved on the receiving Mac and its app notifies you. The
+sender needs no local setup, and `--move` is not allowed with `--to`. For a machine where
+config files are awkward, `--to env` reads `AGENT_DROP_REMOTE_URL` and
+`AGENT_DROP_REMOTE_KEY` instead.
+
+**What this exposes, in plain words:**
+
+- The receiver listens only on the Mac's Tailscale address (port 47400, set with
+  `tailnetPort` in config.json; there is no fallback port), never on your Wi-Fi or LAN
+  address. If Tailscale is down, nothing listens.
+- Every request needs the shared key, and the sender must be a Tailscale device (a
+  `100.64.0.0/10` address). Only the Settings toggle can turn receiving on; editing
+  config.json can't.
+- The tailnet accepts exactly two things: `POST /drops` (add a drop) and `POST /ping` (the
+  `drop remote test` check). Nothing can be **read** over the network; every other route
+  is a 404. The local server and `drop watch` are unchanged.
+- Limits: 200 MB per drop (`tailnetMaxBytes`), two uploads at once (a third gets 503), and
+  a drop is refused (507) if less than 1 GB of disk would remain free. Folders may contain
+  only plain files and folders; a link or an odd path rejects the whole drop.
+- Anyone who has the key and is on your tailnet can add drops to your folder, so treat the
+  key like a password and regenerate it if it leaks.
+
+**Firewall:** the app is ad-hoc signed, so with the macOS firewall on, it may ask to accept
+incoming connections again after each update. Allow it, or senders get "Can't reach".
+
+## Skills for OpenClaw and Hermes
+
+Agents running on the sending Mac can be taught to use `drop add --to` by installing a
+skill: `Scripts/install-agent-skills.sh --openclaw --hermes`. See
+[skills/README.md](skills/README.md).
 
 ## Making a release
 
