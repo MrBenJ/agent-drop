@@ -72,14 +72,17 @@ struct Add: AsyncParsableCommand, SyncRunnable {
         }
         let body = try await TailnetClient(remoteName: to, remote: remote).send(payload, TailnetClient.Metadata(
             name: dropName, from: from, title: title, desc: desc, project: project, tags: tags, handoff: handoff))
-        if output.json {
-            Output.emit(String(decoding: body, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
-        } else {
-            guard let id = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["id"] as? String else {
-                throw AgentDropError.invalid("'\(to)' accepted the drop but its answer had no id")
-            }
-            Output.emit(id)
+        Output.emit(try Self.formatRemoteResponse(body, json: output.json, remoteName: to))
+    }
+
+    /// The receiver's answer is untrusted: it must be a JSON object with a string `id`. JSON
+    /// output is re-encoded (never the raw body); plain output is the terminal-safe id.
+    static func formatRemoteResponse(_ body: Data, json: Bool, remoteName: String) throws -> String {
+        guard let object = try? JSONDecoder().decode([String: JSONValue].self, from: body),
+              let id = object["id"]?.stringValue else {
+            throw AgentDropError.invalid("'\(remoteName)' sent an unexpected response")
         }
+        return json ? Output.jsonString(object) : Output.terminalSafe(id)
     }
 
     /// A regular file or a folder; symlinks and anything else are refused (as for a local add).

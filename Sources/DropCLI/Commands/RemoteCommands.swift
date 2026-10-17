@@ -16,13 +16,16 @@ struct RemoteCommand: ParsableCommand {
             commandName: "add", abstract: "Save (or replace) a remote: its URL and its sender key.")
         @Argument(help: "Name for the remote, e.g. laptop.") var name: String
         @Option(help: "The receiving Mac's tailnet URL, e.g. http://laptop.tail1234.ts.net:47400.") var url: String
-        @Option(help: "The receiving Mac's sender key (64 hex characters).") var key: String
+        @Option(help: "The receiving Mac's sender key (64 hex characters), or '-' to read it from stdin (keeps it out of your shell history).") var key: String
         @OptionGroup var output: JSONOption
 
         func run() throws {
             let context = CLIContext.current
             try RemoteCommand.validate(name: name)
             let remoteURL = try RemoteCommand.validate(url: url)
+            let key = self.key == "-"
+                ? String(decoding: context.readStdin(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                : self.key
             guard key.wholeMatch(of: /[0-9A-Fa-f]{64}/) != nil else {
                 throw AgentDropError.invalid("The key must be 64 hex characters (copy it from the receiving Mac's Agent Drop Settings)")
             }

@@ -100,6 +100,43 @@ struct RemoteCommandTests {
         #expect(!FileManager.default.fileExists(atPath: env.config.configDir.appendingPathComponent("remotes.json").path))
     }
 
+    @Test func remoteAddReadsKeyFromStdin() throws {
+        let env = try TestEnv()
+        env.stdin = Data((sampleKey + "\n").utf8)
+        #expect(env.run("remote", "add", "laptop", "--url", "http://100.64.0.2:47400", "--key", "-").code == 0)
+        let saved = try RemotesFile(configDir: env.config.configDir).load()
+        #expect(saved["laptop"]?.key == sampleKey)
+
+        env.stdin = Data()
+        let empty = env.run("remote", "add", "desk", "--url", "http://100.64.0.2:47400", "--key", "-")
+        #expect(empty.code == 1)
+        #expect(try RemotesFile(configDir: env.config.configDir).load()["desk"] == nil)
+    }
+
+    @Test func remoteResponseIsSanitized() throws {
+        let body = Data(#"{"id":"ab\u001b[31mcd","from":"aria","isFolder":false,"title":"x/y"}"#.utf8)
+        let plain = try Add.formatRemoteResponse(body, json: false, remoteName: "laptop")
+        #expect(!plain.contains("\u{1B}"))
+        #expect(plain == "ab\u{FFFD}[31mcd")
+
+        let json = try Add.formatRemoteResponse(body, json: true, remoteName: "laptop")
+        #expect(!json.contains("\u{1B}"))
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        #expect(object["id"] as? String == "ab\u{1B}[31mcd")
+        #expect(object["from"] as? String == "aria")
+        #expect(object["isFolder"] as? Bool == false)
+        #expect(object["title"] as? String == "x/y")
+
+        for bad in [#"["id"]"#, #"{"from":"aria"}"#, #"{"id":42}"#, "not json", ""] {
+            #expect(throws: AgentDropError.invalid("'laptop' sent an unexpected response")) {
+                try Add.formatRemoteResponse(Data(bad.utf8), json: false, remoteName: "laptop")
+            }
+            #expect(throws: AgentDropError.invalid("'laptop' sent an unexpected response")) {
+                try Add.formatRemoteResponse(Data(bad.utf8), json: true, remoteName: "laptop")
+            }
+        }
+    }
+
     @Test func removeMissingIsExit2() throws {
         let env = try TestEnv()
         #expect(env.run("remote", "remove", "laptop").code == 2)
