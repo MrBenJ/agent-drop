@@ -9,7 +9,7 @@ enum HTTPAPI {
         let router = Router()
         // Outermost first: errors become JSON, then Host and token are checked, for every
         // request including unknown routes.
-        router.add(middleware: ErrorMiddleware())
+        router.add(middleware: ErrorMiddleware<BasicRequestContext>())
         router.add(middleware: AccessMiddleware(token: token, port: port))
 
         router.get("/drops") { request, _ -> Response in
@@ -199,9 +199,7 @@ struct APIError: Error {
     }
 }
 
-struct ErrorMiddleware: RouterMiddleware {
-    typealias Context = BasicRequestContext
-
+struct ErrorMiddleware<Context: RequestContext>: RouterMiddleware {
     func handle(_ request: Request, context: Context,
                 next: (Request, Context) async throws -> Response) async throws -> Response {
         do {
@@ -239,7 +237,7 @@ struct AccessMiddleware: RouterMiddleware {
         guard let host = request.head.authority, allowed.contains(host.lowercased()), !extraHost else {
             throw APIError(.forbidden, "Host not allowed")
         }
-        guard request.headers[.authorization] == "Bearer \(token)" else {
+        guard Secrets.constantTimeEquals(request.headers[.authorization] ?? "", "Bearer \(token)") else {
             throw APIError(.unauthorized, "missing or invalid token")
         }
         return try await next(request, context)
