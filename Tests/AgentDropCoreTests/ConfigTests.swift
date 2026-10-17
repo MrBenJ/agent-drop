@@ -29,6 +29,19 @@ struct ConfigTests {
         #expect(c.tailnetMaxBytes == 1000)
     }
 
+    @Test func tailnetMaxBytesIsBounded() throws {
+        try FileManager.default.createDirectory(at: store.configDir, withIntermediateDirectories: true)
+        let max = AgentDropConfig.maxTailnetMaxBytes
+        let cases: [(String, Int64?)] = [
+            ("9223372036854775807", nil), ("0", nil), ("-1", nil), ("true", nil), ("1.5", nil),
+            ("1", 1), ("\(max)", max), ("\(max + 1)", nil),
+        ]
+        for (json, expected) in cases {
+            try Data(#"{"tailnetMaxBytes": \#(json)}"#.utf8).write(to: store.configFile)
+            #expect(try store.load().tailnetMaxBytes == expected, "tailnetMaxBytes \(json)")
+        }
+    }
+
     @Test func allowTailnetKeyIsIgnored() throws {
         try FileManager.default.createDirectory(at: store.configDir, withIntermediateDirectories: true)
         try Data(#"{"allowTailnet": true}"#.utf8).write(to: store.configFile)

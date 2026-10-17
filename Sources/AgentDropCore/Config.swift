@@ -30,6 +30,8 @@ public struct AgentDropConfig: Equatable, Sendable {
     public static let defaultServerPort = 47390
     public static let defaultTailnetPort = 47400
     public static let defaultTailnetMaxBytes: Int64 = 200 * 1024 * 1024
+    /// Largest accepted `tailnetMaxBytes` (64 GiB); anything bigger is treated as absent.
+    public static let maxTailnetMaxBytes: Int64 = 64 * 1024 * 1024 * 1024
 
     public var folder: String? = nil
     public var eventRetentionDays: Retention = .default
@@ -83,8 +85,10 @@ public struct ConfigStore: Sendable {
         }
         config.serverPort = dict["serverPort"] as? Int
         config.tailnetPort = dict["tailnetPort"] as? Int
-        if let max = (dict["tailnetMaxBytes"] as? NSNumber).map({ $0.int64Value }), max > 0 {
-            config.tailnetMaxBytes = max
+        // Out of range, fractional or boolean: treated as absent (the default applies).
+        if let number = dict["tailnetMaxBytes"] as? NSNumber, Self.isWholeNumber(number),
+           (1...AgentDropConfig.maxTailnetMaxBytes).contains(number.int64Value) {
+            config.tailnetMaxBytes = number.int64Value
         }
         config.setupComplete = dict["setupComplete"] as? Bool ?? false
         config.confirmedFolder = dict["confirmedFolder"] as? String

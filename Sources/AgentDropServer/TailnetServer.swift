@@ -132,11 +132,13 @@ final class UploadSlots: @unchecked Sendable {
         }
     }
 
-    /// Reserves `bytes` if `fits` accepts the total reserved with them included.
+    /// Reserves `bytes` if `fits` accepts the total reserved with them included. A total
+    /// that overflows Int64 doesn't fit.
     func reserve(_ bytes: Int64, if fits: (Int64) -> Bool) -> Bool {
         lock.withLock {
-            guard fits(reservedBytes + bytes) else { return false }
-            reservedBytes += bytes
+            let (total, overflow) = reservedBytes.addingReportingOverflow(bytes)
+            guard !overflow, fits(total) else { return false }
+            reservedBytes = total
             return true
         }
     }
@@ -145,7 +147,7 @@ final class UploadSlots: @unchecked Sendable {
     func release(reserved bytes: Int64) {
         lock.withLock {
             count -= 1
-            reservedBytes -= bytes
+            reservedBytes = reservedBytes.subtractingReportingOverflow(bytes).partialValue
         }
     }
 }
@@ -217,10 +219,18 @@ struct TailnetReceiver: Sendable {
         if let declared, declared > limits.maxBytes { throw tooLarge }
         // Without a length the body may grow to the cap. A folder holds the pack and its
         // unpacked tree at once: count it twice. Uploads in flight have reserved theirs.
-        let needed = (declared ?? limits.maxBytes) * (upload.kind == .folder ? 2 : 1)
+        // An overflowing product can't fit: refuse it (507) rather than trap.
+        let (product, productOverflow) = (declared ?? limits.maxBytes)
+            .multipliedReportingOverflow(by: upload.kind == .folder ? 2 : 1)
+        let needed = productOverflow ? Int64.max : product
         let free = freeBytes(store.folder)
         let minFree = limits.minFreeBytes
-        guard slots.reserve(needed, if: { total in free.map { $0 - total >= minFree } ?? true }) else {
+        guard !productOverflow, slots.reserve(needed, if: { total in
+            free.map { value in
+                let (remaining, overflow) = value.subtractingReportingOverflow(total)
+                return !overflow && remaining >= minFree
+            } ?? true
+        }) else {
             throw APIError(HTTPResponse.Status(code: 507, reasonPhrase: "Insufficient Storage"),
                            "Not enough free disk space on the receiving Mac")
         }

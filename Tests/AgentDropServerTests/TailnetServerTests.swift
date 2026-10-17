@@ -317,6 +317,34 @@ struct TailnetUploadTests {
         #expect(try s.store.store.list(ListFilter()).map(\.filename).sorted() == ["one.txt", "three.txt"])
     }
 
+    /// A cap near Int64.max (config bypassed) must not overflow the reservation arithmetic.
+    @Test func hugeCapFolderUploadIs507NotACrash() async throws {
+        let s = try await TailnetFixture(maxBytes: Int64.max)
+        defer { Task { await s.server.stop() } }
+        var request = s.request("POST", "/drops?kind=folder&name=notes&from=aria",
+                                headers: ["Transfer-Encoding: chunked"])
+        request += Data("5\r\nhello\r\n0\r\n\r\n".utf8)
+        let response = RawResponse(try await rawHTTP(port: s.port, request))
+        #expect(response.status == 507)
+        #expect(s.stagingEntries().isEmpty)
+        #expect(try s.store.store.list(ListFilter()).isEmpty)
+    }
+
+    /// Two reservations that together overflow Int64 are refused even with no free-space reading.
+    @Test func overlappingReservationsThatOverflowAre507() async throws {
+        let s = try await TailnetFixture(maxBytes: Int64.max)
+        defer { Task { await s.server.stop() } }
+        let first = try await rawHTTPConnection(port: s.port)
+        defer { first.close() }
+        try await first.send(s.request("POST", fileDrop, headers: ["Transfer-Encoding: chunked"])
+                             + Data("5\r\nhello\r\n".utf8))
+        #expect(await eventually { s.stagingEntries().count == 1 })
+
+        var second = s.request("POST", fileDrop, headers: ["Transfer-Encoding: chunked"])
+        second += Data("5\r\nhello\r\n0\r\n\r\n".utf8)
+        #expect(RawResponse(try await rawHTTP(port: s.port, second)).status == 507)
+    }
+
     /// A 500's raw error text can name receiver paths; senders get a generic message.
     @Test func internalErrorsDoNotLeakDetails() async throws {
         let s = try await TailnetFixture()
