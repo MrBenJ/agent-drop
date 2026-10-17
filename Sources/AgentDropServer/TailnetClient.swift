@@ -44,11 +44,15 @@ public struct TailnetClient: Sendable {
     private let remoteName: String
     private let remote: Remote
     private let session: URLSession
+    /// Where a folder's pack is written while it uploads (removed afterwards).
+    private let temporaryDirectory: URL
 
-    public init(remoteName: String, remote: Remote, session: URLSession = .shared) {
+    public init(remoteName: String, remote: Remote, session: URLSession = .shared,
+                temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
         self.remoteName = remoteName
         self.remote = remote
         self.session = session
+        self.temporaryDirectory = temporaryDirectory
     }
 
     /// Uploads the payload and returns the receiver's 201 JSON body.
@@ -59,8 +63,7 @@ public struct TailnetClient: Sendable {
         case .file(let file):
             return try await perform { try await session.upload(for: request, fromFile: file) }
         case .folder(let folder):
-            let pack = FileManager.default.temporaryDirectory
-                .appendingPathComponent("agentdrop-\(UUID().uuidString).adpk")
+            let pack = temporaryDirectory.appendingPathComponent("agentdrop-\(UUID().uuidString).adpk")
             defer { try? FileManager.default.removeItem(at: pack) }
             try DropPack.write(folder: folder, to: pack)
             return try await perform { try await session.upload(for: request, fromFile: pack) }

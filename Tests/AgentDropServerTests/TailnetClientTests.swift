@@ -5,9 +5,11 @@ import Testing
 
 private let loopbackIdentity = TailnetIdentity(address: "127.0.0.1", dnsName: nil)
 
-private func client(_ s: TailnetFixture, key: String? = nil) -> TailnetClient {
+private func client(_ s: TailnetFixture, key: String? = nil,
+                    temporaryDirectory: URL = FileManager.default.temporaryDirectory) -> TailnetClient {
     TailnetClient(remoteName: "laptop",
-                  remote: .init(url: URL(string: "http://127.0.0.1:\(s.port)")!, key: key ?? s.key.value ?? ""))
+                  remote: .init(url: URL(string: "http://127.0.0.1:\(s.port)")!, key: key ?? s.key.value ?? ""),
+                  temporaryDirectory: temporaryDirectory)
 }
 
 private func metadata(_ name: String = "report.md") -> TailnetClient.Metadata {
@@ -42,13 +44,15 @@ struct TailnetClientTests {
         try FileManager.default.createDirectory(at: source.appendingPathComponent("sub"), withIntermediateDirectories: true)
         try Data("# A\n".utf8).write(to: source.appendingPathComponent("a.md"))
         try Data("bee".utf8).write(to: source.appendingPathComponent("sub/b.txt"))
-        let body = try json(try await client(s).send(.folder(source), metadata("notes")))
+        // Its own temp dir: the shared one can hold other tests' packs mid-send.
+        let temp = s.store.dir.url.appendingPathComponent("tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        let body = try json(try await client(s, temporaryDirectory: temp).send(.folder(source), metadata("notes")))
         #expect(body["isFolder"] == .bool(true))
         let drop = try #require(try s.store.store.list(ListFilter()).first)
         let stored = s.store.store.path(of: drop)
         #expect(try Data(contentsOf: stored.appendingPathComponent("sub/b.txt")) == Data("bee".utf8))
-        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: NSTemporaryDirectory())) ?? []
-        #expect(!leftovers.contains { $0.hasSuffix(".adpk") })
+        #expect(try FileManager.default.contentsOfDirectory(atPath: temp.path).isEmpty)
     }
 
     @Test func sendsData() async throws {
