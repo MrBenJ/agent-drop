@@ -23,19 +23,11 @@ struct ServerFixture {
 func randomPortBase() -> Int { Int.random(in: 20_000...59_000) }
 
 /// Sends raw bytes, so tests can control headers URLSession would rewrite (e.g. `Host`).
-/// The blocking socket calls run on a GCD thread: blocking a Swift concurrency thread
-/// would starve the server under test on small CI machines.
+/// The blocking socket calls run on a thread of their own (`onRawThread`): blocking a
+/// Swift concurrency thread would starve the server under test on small CI machines.
 func rawHTTP(port: Int, _ request: String) async throws -> String {
-    try await withCheckedThrowingContinuation { continuation in
-        rawHTTPQueue.async {
-            continuation.resume(with: Result { try blockingRawHTTP(port: port, request) })
-        }
-    }
+    try await onRawThread { try blockingRawHTTP(port: port, request) }
 }
-
-/// Its own concurrent queue: `DispatchQueue.global()` has about one thread per core, and
-/// other tests may be blocking all of them.
-private let rawHTTPQueue = DispatchQueue(label: "tests.rawHTTP", attributes: .concurrent)
 
 private func blockingRawHTTP(port: Int, _ request: String) throws -> String {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
@@ -171,7 +163,7 @@ func rawHTTP(port: Int, _ request: Data) async throws -> String {
 }
 
 /// An open socket the test writes to in pieces and can leave hanging. As with `rawHTTP`,
-/// every blocking call runs on `rawHTTPQueue`, never on a Swift concurrency thread.
+/// every blocking call runs on `onRawThread`, never on a Swift concurrency thread.
 final class RawConnection: @unchecked Sendable {
     private let lock = NSLock()
     private var fd: Int32
@@ -183,7 +175,7 @@ final class RawConnection: @unchecked Sendable {
 
     func send(_ data: Data) async throws {
         let fd = lock.withLock { self.fd }
-        try await onRawQueue {
+        try await onRawThread {
             let sent = data.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, data.count, 0) }
             guard sent == data.count else { throw POSIXError(.EPIPE) }
         }
@@ -193,7 +185,7 @@ final class RawConnection: @unchecked Sendable {
     func readToEnd() async -> String {
         let fd = lock.withLock { self.fd }
         guard fd >= 0 else { return "" }
-        let data = (try? await onRawQueue { () -> Data in
+        let data = (try? await onRawThread { () -> Data in
             var response = Data()
             var buffer = [UInt8](repeating: 0, count: 4096)
             while true {
@@ -215,7 +207,7 @@ final class RawConnection: @unchecked Sendable {
 }
 
 func rawHTTPConnection(port: Int) async throws -> RawConnection {
-    let fd = try await onRawQueue { () -> Int32 in
+    let fd = try await onRawThread { () -> Int32 in
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         precondition(fd >= 0)
         var timeout = timeval(tv_sec: 5, tv_usec: 0)
@@ -240,8 +232,10 @@ func rawHTTPConnection(port: Int) async throws -> RawConnection {
     return RawConnection(fd: fd)
 }
 
-private func onRawQueue<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+/// A thread per call, not `DispatchQueue.global()` or a private concurrent queue: both
+/// draw on GCD's pool of about one thread per core, which other tests may be blocking.
+private func onRawThread<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
     try await withCheckedThrowingContinuation { continuation in
-        rawHTTPQueue.async { continuation.resume(with: Result { try body() }) }
+        Thread.detachNewThread { continuation.resume(with: Result { try body() }) }
     }
 }
