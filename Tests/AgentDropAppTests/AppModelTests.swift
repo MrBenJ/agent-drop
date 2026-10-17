@@ -182,9 +182,9 @@ struct AppModelFolderTests {
         let firstToken = f.infoFile.read()?.token
         let other = f.scratch.url.appendingPathComponent("Other", isDirectory: true)
         try f.config.setFolder(other) // `drop config set-folder`, seen through the config watcher
-        #expect(await eventually { model.library.store?.folder.path == other.path })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.store?.folder.path == other.path })
         #expect(model.phase == .running)
-        #expect(await eventually { f.infoFile.read()?.token != firstToken })
+        #expect(await eventually(timeout: fsEventsTimeout) { f.infoFile.read()?.token != firstToken })
         await f.stopAll()
     }
 
@@ -353,7 +353,7 @@ struct AppModelLinkTests {
                 _ = try cli.add(AddRequest(source: .path(source), from: "agent"))
             }
         }
-        #expect(await eventually { model.library.drops.count == 60 })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.drops.count == 60 })
         await f.stopAll()
     }
 
@@ -411,9 +411,9 @@ struct AppModelLinkTests {
         let source = f.scratch.url.appendingPathComponent("x.md")
         try Data("# X".utf8).write(to: source)
         let drop = try cli.add(AddRequest(source: .path(source), from: "agent"))
-        #expect(await eventually { model.library.drop(drop.id) != nil })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.drop(drop.id) != nil })
         try Data("y".utf8).write(to: f.defaultFolder.appendingPathComponent("loose.txt"))
-        #expect(await eventually { model.library.unregistered.map(\.name) == ["loose.txt"] })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.unregistered.map(\.name) == ["loose.txt"] })
         await f.stopAll()
     }
 }
@@ -430,13 +430,13 @@ struct AppModelNotificationTests {
         let source = f.scratch.url.appendingPathComponent("x.md")
         try Data("# From the CLI".utf8).write(to: source)
         _ = try cli.add(AddRequest(source: .path(source), from: "agent"))
-        #expect(await eventually { poster.posted.map(\.title) == ["From the CLI"] })
+        #expect(await eventually(timeout: fsEventsTimeout) { poster.posted.map(\.title) == ["From the CLI"] })
 
         model.settings.notifyOnNewDrops = false
         let second = f.scratch.url.appendingPathComponent("y.md")
         try Data("# Quiet".utf8).write(to: second)
         _ = try cli.add(AddRequest(source: .path(second), from: "agent"))
-        #expect(await eventually { model.library.drops.count == 2 })
+        #expect(await eventually(timeout: fsEventsTimeout) { model.library.drops.count == 2 })
         #expect(poster.posted.count == 1)
         await model.shutdown()
     }

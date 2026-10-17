@@ -41,6 +41,11 @@ struct StoreFixture {
     }
 }
 
+/// For a wait on something only FSEvents delivers (a CLI write, a config change). Under
+/// the full parallel suite fseventsd can lag several seconds, so 5 s is too tight; the
+/// polling still returns as soon as the condition holds.
+let fsEventsTimeout: Duration = .seconds(20)
+
 /// Polls `condition` on the main actor until it holds or `timeout` passes.
 @MainActor
 func eventually(timeout: Duration = .seconds(5), _ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
