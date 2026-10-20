@@ -6,8 +6,15 @@ import Foundation
 public enum AppLink {
     public static let scheme = "agentdrop"
 
-    public static func url(forDrop id: String) -> URL {
-        URL(string: "\(scheme)://drop/\(id)")!
+    /// `background`: show the drop without taking focus (`drop open`'s default).
+    public static func url(forDrop id: String, background: Bool = false) -> URL {
+        URL(string: "\(scheme)://drop/\(id)\(background ? "?background=1" : "")")!
+    }
+
+    /// Whether the link asks to leave focus with the app the user is in.
+    public static func isBackground(_ url: URL) -> Bool {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .contains { $0.name == "background" && $0.value == "1" } ?? false
     }
 
     /// The drop id in an `agentdrop://drop/<id>` URL; nil for anything else.

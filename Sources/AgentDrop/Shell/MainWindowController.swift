@@ -30,4 +30,9 @@ final class MainWindowController: NSWindowController {
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    /// In front of other apps' windows, but the app the user is typing in keeps focus.
+    func showInBackground() {
+        window?.orderFrontRegardless()
+    }
 }

@@ -309,6 +309,27 @@ struct AppModelLinkTests {
         await f.stopAll()
     }
 
+    @Test func aBackgroundLinkShowsTheWindowWithoutActivating() async throws {
+        let f = try AppFixture()
+        try f.finishedSetup()
+        let store = try DropStore.open(folder: f.defaultFolder, retention: .default)
+        let source = f.scratch.url.appendingPathComponent("plan.md")
+        try Data("# Plan".utf8).write(to: source)
+        let drop = try store.add(AddRequest(source: .path(source), from: "agent"))
+
+        let model = f.model()
+        var front = 0, behind = 0
+        model.showWindow = { front += 1 }
+        model.showWindowInBackground = { behind += 1 }
+        await model.launch()
+        await model.open(AppLink.url(forDrop: drop.id, background: true))
+        #expect(front == 0 && behind == 1)
+        #expect(model.library.selection == [.drop(drop.id)])
+        await model.open(AppLink.url(forDrop: drop.id))
+        #expect(front == 1 && behind == 1)
+        await f.stopAll()
+    }
+
     @Test func badLinksAndUnknownIdsAlert() async throws {
         let f = try AppFixture()
         try f.finishedSetup()

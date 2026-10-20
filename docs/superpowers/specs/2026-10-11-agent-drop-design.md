@@ -305,7 +305,7 @@ starts at login.
 
 | Command | Behavior |
 |---|---|
-| `drop open <id>` | Opens `agentdrop://drop/<id>` → the app shows that drop's rendered view (launching the app if needed). |
+| `drop open <id> [--foreground\|-f]` | Opens `agentdrop://drop/<id>?background=1` with `open -g` (and `--args --background` for a fresh launch) → the app shows that drop's rendered view (launching the app if needed). The window comes to the front but the app the user is in keeps focus. `--foreground` opens plain `agentdrop://drop/<id>` without `-g`, so the app activates. |
 | `drop code <id>` | Runs `code <absolute path>`. If `code` isn't on PATH → exit 1 with a hint. |
 | `drop where` | Prints the drop folder path in use. |
 | `drop config set-folder <path>` | Sets the drop folder in `config.json` (creating the folder if needed). |

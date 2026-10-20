@@ -57,6 +57,8 @@ only forgets setup and settings).
 ## Watching (spec §4 Watching, §5)
 - [ ] Quit the app. `drop watch --inbox`: the app starts with no window, menu bar icon only.
 - [ ] `drop open <id>` with the app quit: it launches and shows that drop.
+- [ ] `drop open <id>`, with the app running and with it quit: the window shows that drop,
+  and the terminal keeps focus (typing still goes to it). `--foreground` activates the app.
 - [ ] Settings → General shows the server's port. Quit the app, occupy 47390–47399
       (`for p in $(seq 47390 47399); do nc -l 127.0.0.1 $p & done`), launch it: the window
       shows the no-port banner. `kill %1` (frees 47390), **Retry** recovers.
