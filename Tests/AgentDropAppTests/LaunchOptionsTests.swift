@@ -12,6 +12,13 @@ struct LaunchOptionsTests {
         #expect(!LaunchOptions(arguments: ["--windowless"]).windowless)
     }
 
+    @Test func backgroundOnlyWhenPassed() {
+        let options = LaunchOptions(arguments: ["/x/AgentDrop", "--background"])
+        #expect(options.background && !options.windowless)
+        #expect(!LaunchOptions(arguments: ["/x/AgentDrop"]).background)
+        #expect(!LaunchOptions(arguments: ["--background"]).background)
+    }
+
     @Test func bundleIdentityMatchesTheCLIAndInfoPlist() throws {
         #expect(AppIdentity.bundleID == CLIContext.appBundleID)
         let plistURL = URL(fileURLWithPath: #filePath)

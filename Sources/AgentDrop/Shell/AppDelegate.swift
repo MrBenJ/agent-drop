@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          poster: notifications)
         super.init()
         model.showWindow = { [weak self] in self?.showMainWindow() }
+        model.showWindowInBackground = { [weak self] in self?.mainWindow.showInBackground() }
         notifications.onOpen = { [weak self] dropID in
             guard let self else { return }
             if let dropID {
@@ -45,7 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             await model.launch()
             // Setup always shows its window (spec §2), even for a windowless launch.
-            if !launchOptions.windowless || model.phase == .setup { showMainWindow() }
+            if !launchOptions.windowless || model.phase == .setup {
+                launchOptions.background ? mainWindow.showInBackground() : showMainWindow()
+            }
         }
     }
 

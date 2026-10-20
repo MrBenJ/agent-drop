@@ -54,6 +54,8 @@ public final class AppModel {
     public private(set) var pendingDropID: String?
     /// Set by the app delegate: brings up the main window.
     @ObservationIgnored public var showWindow: @MainActor () -> Void = {}
+    /// Shows the window without activating the app (`drop open` without `--foreground`).
+    @ObservationIgnored public var showWindowInBackground: @MainActor () -> Void = {}
 
     @ObservationIgnored let loginItem: LoginItemControlling
     @ObservationIgnored private let notifier = NewDropNotifier()
@@ -349,8 +351,8 @@ public final class AppModel {
 
     /// `drop open`, a notification, or the menu: show the drop. Before the drops can be
     /// shown (setup, confirmation) it is remembered and shown once they can (spec §2).
-    public func open(dropID: String) async {
-        showWindow()
+    public func open(dropID: String, background: Bool = false) async {
+        background ? showWindowInBackground() : showWindow()
         guard phase == .running else {
             pendingDropID = dropID
             return
@@ -364,7 +366,7 @@ public final class AppModel {
             library.alert = "Agent Drop can't open \(url.absoluteString)."
             return
         }
-        await open(dropID: id)
+        await open(dropID: id, background: AppLink.isBackground(url))
     }
 
     // MARK: Internals

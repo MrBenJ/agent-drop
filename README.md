@@ -59,7 +59,8 @@ drop done <id> --note "shipped in PR #42"
 Teach your agents with `drop agent-instructions >> CLAUDE.md` (or `AGENTS.md`).
 
 `drop open <id>` shows a drop in the app (rendered Markdown, file previews, handoff
-buttons). The menu bar icon counts unread drops.
+buttons). It doesn't take focus from your terminal; add `--foreground` (`-f`) to switch to the app.
+The menu bar icon counts unread drops.
 
 `--from`, `--by`, `--project` and tags are yours to define. Agent Drop never guesses them.
 Its only convention is `/` as an optional level separator (`drop list --from-under team`).
