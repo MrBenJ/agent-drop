@@ -69,7 +69,9 @@ struct TextFileView: NSViewRepresentable {
 
 /// Images, PDFs and everything else (spec §6). Quick Look opens paths itself and would
 /// follow a link swapped in after classification, so it is shown a private snapshot
-/// taken through a no-follow descriptor, retaken when the file (revision) changes.
+/// taken through a no-follow descriptor, retaken when the file itself changes. A revision
+/// alone (any reload: another drop, a tailnet upload streaming into staging) only checks:
+/// resetting `previewItem` makes Quick Look blank and redraw, which flashes.
 struct QuickLookView: NSViewRepresentable {
     let root: URL
     let relativePath: String
@@ -82,7 +84,7 @@ struct QuickLookView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: QLPreviewView, context: Context) {
-        let key = "\(relativePath)#\(revision)"
+        let key = Coordinator.Key(path: relativePath, identity: NoFollowFile.identity(relativePath, under: root))
         guard context.coordinator.key != key else { return }
         context.coordinator.key = key
         let previous = context.coordinator.snapshot
@@ -98,7 +100,12 @@ struct QuickLookView: NSViewRepresentable {
     }
 
     final class Coordinator {
-        var key: String?
+        struct Key: Equatable {
+            var path: String
+            var identity: NoFollowFile.Identity?
+        }
+
+        var key: Key?
         var snapshot: URL?
     }
 }
