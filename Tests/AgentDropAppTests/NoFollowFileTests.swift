@@ -77,4 +77,25 @@ struct NoFollowFileTests {
         try swapForLink("plan.md", to: secret)
         #expect(NoFollowFile.snapshot("plan.md", under: root) == nil)
     }
+
+    /// Quick Look retakes its snapshot only when this changes, not on every library reload:
+    /// resetting the preview on each reload made PNGs flash while a tailnet upload streamed in.
+    @Test func identityIsStableUntilTheFileChanges() throws {
+        let first = try #require(NoFollowFile.identity("bundle/docs/a.md", under: root))
+        #expect(NoFollowFile.identity("bundle/docs/a.md", under: root) == first)
+        try Data("unrelated".utf8).write(to: root.appendingPathComponent("other.png"))
+        #expect(NoFollowFile.identity("bundle/docs/a.md", under: root) == first)
+
+        let handle = try FileHandle(forWritingTo: root.appendingPathComponent("bundle/docs/a.md"))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("er".utf8)) // in place: same file number
+        try handle.close()
+        let rewritten = try #require(NoFollowFile.identity("bundle/docs/a.md", under: root))
+        #expect(rewritten != first)
+        try Data("deeper".utf8).write(to: root.appendingPathComponent("bundle/docs/a.md"), options: .atomic)
+        #expect(NoFollowFile.identity("bundle/docs/a.md", under: root) != rewritten) // replaced, same size
+
+        try swapForLink("plan.md", to: secret)
+        #expect(NoFollowFile.identity("plan.md", under: root) == nil)
+    }
 }

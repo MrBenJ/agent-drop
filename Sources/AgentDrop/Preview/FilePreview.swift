@@ -69,37 +69,29 @@ struct TextFileView: NSViewRepresentable {
 
 /// Images, PDFs and everything else (spec §6). Quick Look opens paths itself and would
 /// follow a link swapped in after classification, so it is shown a private snapshot
-/// taken through a no-follow descriptor, retaken when the file (revision) changes.
+/// taken through a no-follow descriptor, retaken when the file itself changes. A revision
+/// alone (any reload: another drop, a tailnet upload streaming into staging) only checks:
+/// resetting `previewItem` makes Quick Look blank and redraw, which flashes.
 struct QuickLookView: NSViewRepresentable {
     let root: URL
     let relativePath: String
     let revision: Int
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> QuickLookSnapshot { QuickLookSnapshot() }
 
     func makeNSView(context: Context) -> QLPreviewView {
         QLPreviewView(frame: .zero, style: .normal)!
     }
 
     func updateNSView(_ view: QLPreviewView, context: Context) {
-        let key = "\(relativePath)#\(revision)"
-        guard context.coordinator.key != key else { return }
-        context.coordinator.key = key
-        let previous = context.coordinator.snapshot
-        let snapshot = NoFollowFile.snapshot(relativePath, under: root)
-        context.coordinator.snapshot = snapshot
-        view.previewItem = snapshot.map { $0 as NSURL }
-        if let previous { NoFollowFile.discardSnapshot(previous) }
+        guard let change = context.coordinator.update(relativePath, under: root) else { return }
+        view.previewItem = change.url.map { $0 as NSURL }
+        if let previous = change.previous { NoFollowFile.discardSnapshot(previous) }
     }
 
-    static func dismantleNSView(_ view: QLPreviewView, coordinator: Coordinator) {
+    static func dismantleNSView(_ view: QLPreviewView, coordinator: QuickLookSnapshot) {
         view.close()
-        if let snapshot = coordinator.snapshot { NoFollowFile.discardSnapshot(snapshot) }
-    }
-
-    final class Coordinator {
-        var key: String?
-        var snapshot: URL?
+        coordinator.discard()
     }
 }
 
