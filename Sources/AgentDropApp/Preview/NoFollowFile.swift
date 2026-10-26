@@ -16,13 +16,16 @@ public enum NoFollowFile {
 
     /// Which file is at `relativePath` and which version of it, read through a no-follow
     /// descriptor. Equal identities mean the same contents for preview purposes: a rewrite
-    /// changes the modification time or size, an atomic replace the file number.
+    /// changes the status-change time (which, unlike the modification time, can't be set
+    /// back), an atomic replace the file number.
     public struct Identity: Equatable, Sendable {
         var device: Int64
         var fileNumber: UInt64
         var size: Int64
         var modifiedSeconds: Int
         var modifiedNanoseconds: Int
+        var changedSeconds: Int
+        var changedNanoseconds: Int
     }
 
     /// nil for anything `read` refuses.
@@ -32,7 +35,8 @@ public enum NoFollowFile {
         var info = stat()
         guard fstat(fd, &info) == 0 else { return nil }
         return Identity(device: Int64(info.st_dev), fileNumber: UInt64(info.st_ino), size: Int64(info.st_size),
-                        modifiedSeconds: info.st_mtimespec.tv_sec, modifiedNanoseconds: info.st_mtimespec.tv_nsec)
+                        modifiedSeconds: info.st_mtimespec.tv_sec, modifiedNanoseconds: info.st_mtimespec.tv_nsec,
+                        changedSeconds: info.st_ctimespec.tv_sec, changedNanoseconds: info.st_ctimespec.tv_nsec)
     }
 
     /// Quick Look opens paths itself, so it gets a private copy made from a no-follow

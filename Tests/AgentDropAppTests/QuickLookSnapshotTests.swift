@@ -36,6 +36,29 @@ struct QuickLookSnapshotTests {
         #expect(try Data(contentsOf: second) == Data("new png".utf8))
     }
 
+    /// Aria's review of PR #12: a same-size rewrite that restores the modification time
+    /// (a timestamp-preserving copy or sync) is still a change.
+    @Test func aRewriteThatRestoresTheModificationTimeIsRetaken() throws {
+        let file = root.appendingPathComponent("shot.png")
+        let snapshot = QuickLookSnapshot()
+        defer { snapshot.discard() }
+        let first = try #require(snapshot.update("shot.png", under: root)?.url)
+        var before = stat()
+        #expect(stat(file.path, &before) == 0)
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.write(contentsOf: Data("PNG".utf8)) // in place, same size
+        try handle.close()
+        var times = [timespec(tv_sec: 0, tv_nsec: Int(UTIME_OMIT)), before.st_mtimespec]
+        #expect(utimensat(AT_FDCWD, file.path, &times, 0) == 0)
+        var after = stat()
+        #expect(stat(file.path, &after) == 0)
+        #expect(after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec
+            && after.st_mtimespec.tv_nsec == before.st_mtimespec.tv_nsec && after.st_size == before.st_size)
+        let change = try #require(snapshot.update("shot.png", under: root))
+        #expect(change.previous == first)
+        #expect(try Data(contentsOf: try #require(change.url)) == Data("PNG".utf8))
+    }
+
     /// Aria's review of PR #12: a failed snapshot of an unchanged file must be retried.
     @Test func aFailedSnapshotIsRetriedWhileTheFileIsUnchanged() throws {
         var failing = true
