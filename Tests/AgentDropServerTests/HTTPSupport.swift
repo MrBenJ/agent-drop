@@ -20,7 +20,34 @@ struct ServerFixture {
 }
 
 /// Parallel tests each start in a different range; collisions just fall through to the next port.
-func randomPortBase() -> Int { Int.random(in: 20_000...59_000) }
+/// Ranges end below macOS's ephemeral ports (49152 and up): a loopback client socket on
+/// the port would fail the bind, and the parallel suite opens plenty of those.
+func randomPortBase() -> Int { Int.random(in: 20_000...49_000) }
+
+/// A port nothing on 127.0.0.1 holds right now, for tests that bind one exact port and
+/// so can't fall through to the next one.
+func freePort() -> Int {
+    while true {
+        let port = randomPortBase()
+        if canBind(port: port) { return port }
+    }
+}
+
+private func canBind(port: Int) -> Bool {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    precondition(fd >= 0)
+    defer { close(fd) }
+    // As the listeners under test bind: a TIME_WAIT left by an earlier test doesn't count.
+    var reuse: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(UInt16(port).bigEndian)
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    return withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    } == 0
+}
 
 /// Sends raw bytes, so tests can control headers URLSession would rewrite (e.g. `Host`).
 /// The blocking socket calls run on a thread of their own (`onRawThread`): blocking a
