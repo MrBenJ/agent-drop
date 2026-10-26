@@ -77,36 +77,21 @@ struct QuickLookView: NSViewRepresentable {
     let relativePath: String
     let revision: Int
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> QuickLookSnapshot { QuickLookSnapshot() }
 
     func makeNSView(context: Context) -> QLPreviewView {
         QLPreviewView(frame: .zero, style: .normal)!
     }
 
     func updateNSView(_ view: QLPreviewView, context: Context) {
-        let key = Coordinator.Key(path: relativePath, identity: NoFollowFile.identity(relativePath, under: root))
-        guard context.coordinator.key != key else { return }
-        context.coordinator.key = key
-        let previous = context.coordinator.snapshot
-        let snapshot = NoFollowFile.snapshot(relativePath, under: root)
-        context.coordinator.snapshot = snapshot
-        view.previewItem = snapshot.map { $0 as NSURL }
-        if let previous { NoFollowFile.discardSnapshot(previous) }
+        guard let change = context.coordinator.update(relativePath, under: root) else { return }
+        view.previewItem = change.url.map { $0 as NSURL }
+        if let previous = change.previous { NoFollowFile.discardSnapshot(previous) }
     }
 
-    static func dismantleNSView(_ view: QLPreviewView, coordinator: Coordinator) {
+    static func dismantleNSView(_ view: QLPreviewView, coordinator: QuickLookSnapshot) {
         view.close()
-        if let snapshot = coordinator.snapshot { NoFollowFile.discardSnapshot(snapshot) }
-    }
-
-    final class Coordinator {
-        struct Key: Equatable {
-            var path: String
-            var identity: NoFollowFile.Identity?
-        }
-
-        var key: Key?
-        var snapshot: URL?
+        coordinator.discard()
     }
 }
 
