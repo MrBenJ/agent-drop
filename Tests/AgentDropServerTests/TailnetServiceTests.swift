@@ -14,14 +14,18 @@ private struct TailnetServiceFixture {
 
     init(identity initial: TailnetIdentity? = TailnetFixture.identity) throws {
         base = try ServiceFixture()
-        port = randomPortBase()
+        // The service binds this one port and never tries another (unlike the loopback server).
+        port = freePort()
         var dict = try base.config.readDict()
         dict["tailnetPort"] = port
         try base.config.writeDict(dict)
         identity.withLock { $0 = initial }
 
         var options = AgentDropService.Options()
-        options.portBase = randomPortBase()
+        // The loopback server binds first; keep its range off the tailnet port.
+        var portBase = randomPortBase()
+        while (portBase..<portBase + options.portAttempts).contains(port) { portBase = randomPortBase() }
+        options.portBase = portBase
         options.debounce = .milliseconds(50)
         let identity = identity
         let states = states
@@ -54,6 +58,11 @@ private struct TailnetServiceFixture {
         }
     }
 }
+
+/// A poll is a 100 ms sleep, then a turn on the service's serial queue, a listener's
+/// graceful stop and a new bind. Under the full parallel suite on CI that adds up to more
+/// than a second (these tests take 7–8 s there); `eventually` still returns once it holds.
+private let pollTimeout: Duration = .seconds(5)
 
 struct TailnetServiceTests {
     @Test func offByDefaultNoListener() async throws {
@@ -133,11 +142,11 @@ struct TailnetServiceTests {
         #expect(await f.tailnetRefused())
 
         f.identity.withLock { $0 = TailnetFixture.identity }
-        #expect(await eventually(timeout: .seconds(1)) { await f.service.tailnetState == f.receiving })
+        #expect(await eventually(timeout: pollTimeout) { await f.service.tailnetState == f.receiving })
         #expect(try await f.send("POST", "/ping").status == 204)
 
         f.identity.withLock { $0 = nil }
-        #expect(await eventually(timeout: .seconds(1)) { await f.service.tailnetState == .notConnected })
+        #expect(await eventually(timeout: pollTimeout) { await f.service.tailnetState == .notConnected })
         #expect(await f.tailnetRefused())
     }
 
@@ -148,7 +157,9 @@ struct TailnetServiceTests {
         #expect(await f.service.setTailnet(enabled: true) == f.receiving)
         f.identity.withLock { $0 = TailnetIdentity(address: "100.100.9.9", dnsName: "renamed.tail-test.ts.net") }
         let renamed = TailnetState.receiving(host: "renamed.tail-test.ts.net", port: f.port)
-        #expect(await eventually(timeout: .seconds(1)) { await f.service.tailnetState == renamed })
+        #expect(await eventually(timeout: pollTimeout) { await f.service.tailnetState == renamed })
+        // Straight from one listener to the next; a `.portInUse` here means the rebind lost the port.
+        #expect(f.states.value == [f.receiving, renamed])
         // The new listener answers the new name only.
         let ping = "POST /ping HTTP/1.1\r\nHost: renamed.tail-test.ts.net:\(f.port)\r\n"
             + "Authorization: Bearer \(try f.key())\r\nConnection: close\r\n\r\n"
@@ -183,7 +194,7 @@ struct TailnetServiceTests {
         #expect(await f.service.setTailnet(enabled: true) == .portInUse(f.port))
         // The next poll after the port frees up binds it.
         await blocker.stop()
-        #expect(await eventually(timeout: .seconds(1)) { await f.service.tailnetState == f.receiving })
+        #expect(await eventually(timeout: pollTimeout) { await f.service.tailnetState == f.receiving })
     }
 
     @Test func portInUseWithTailscaleGoneIsNotConnected() async throws {
