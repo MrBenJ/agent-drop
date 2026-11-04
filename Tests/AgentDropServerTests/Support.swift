@@ -36,8 +36,13 @@ final class Locked<Value>: @unchecked Sendable {
 /// the polling still returns as soon as the condition holds.
 let fsEventsTimeout: Duration = .seconds(20)
 
+/// The default wait. The full parallel suite stalls for several seconds at startup (even
+/// trivial tests report 5-8 s on CI), so a 5 s budget can run out before a 50 ms debounce
+/// fires. The polling still returns as soon as the condition holds.
+let defaultEventuallyTimeout: Duration = .seconds(20)
+
 /// Polls `condition` until it holds or `timeout` passes.
-func eventually(timeout: Duration = .seconds(5), _ condition: @Sendable () async throws -> Bool) async rethrows -> Bool {
+func eventually(timeout: Duration = defaultEventuallyTimeout, _ condition: @Sendable () async throws -> Bool) async rethrows -> Bool {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
         if try await condition() { return true }

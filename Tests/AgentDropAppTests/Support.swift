@@ -46,9 +46,14 @@ struct StoreFixture {
 /// polling still returns as soon as the condition holds.
 let fsEventsTimeout: Duration = .seconds(20)
 
+/// The default wait. The full parallel suite stalls for several seconds at startup (even
+/// trivial tests report 5-8 s on CI), so 5 s is too tight; the polling still returns as
+/// soon as the condition holds.
+let defaultEventuallyTimeout: Duration = .seconds(20)
+
 /// Polls `condition` on the main actor until it holds or `timeout` passes.
 @MainActor
-func eventually(timeout: Duration = .seconds(5), _ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
+func eventually(timeout: Duration = defaultEventuallyTimeout, _ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
         if try await condition() { return true }
